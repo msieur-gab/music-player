@@ -1,0 +1,389 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+}
+
+:root {
+  --bg: #121212;
+  --surface: #1e1e1e;
+  --surface-hover: #2a2a2a;
+  --text: #e0e0e0;
+  --text-muted: #888;
+  --accent: #4fc3f7;
+  --radius: 6px;
+}
+
+html { height: 100%; }
+
+body {
+  font-family: system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+/* ---- Header / Download bar ---- */
+header {
+  padding: 1rem;
+  background: var(--surface);
+  border-bottom: 1px solid #333;
+}
+
+header h1 {
+  font-size: 1.2rem;
+  margin-bottom: 0.5rem;
+}
+
+#download-form {
+  display: flex;
+  gap: 0.5rem;
+}
+
+#playlist-url {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #444;
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+#download-form button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: #000;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#download-status {
+  display: block;
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+#download-status[hidden] { display: none; }
+
+/* ---- Navigation ---- */
+#main-nav {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  background: var(--surface);
+  border-bottom: 1px solid #333;
+}
+
+#nav-tabs {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.tab {
+  padding: 0.4rem 0.75rem;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.tab.active {
+  color: var(--accent);
+  background: rgba(79, 195, 247, 0.1);
+}
+
+#search-bar {
+  flex: 1;
+  max-width: 300px;
+  margin-left: auto;
+}
+
+#search-input {
+  width: 100%;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid #444;
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+/* ---- Main ---- */
+main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+}
+
+/* ---- Card Grid ---- */
+#card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 1rem;
+}
+
+#card-grid:empty::after {
+  content: "No music yet — paste a playlist URL above to get started.";
+  color: var(--text-muted);
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 3rem;
+}
+
+/* Group headers inside the grid */
+.group-header {
+  grid-column: 1 / -1;
+  font-size: 1.1rem;
+  font-weight: 600;
+  padding: 0.75rem 0 0.25rem;
+  border-bottom: 1px solid #333;
+  margin-top: 0.5rem;
+}
+
+.group-header:first-child {
+  margin-top: 0;
+}
+
+.album-card {
+  cursor: pointer;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface);
+  transition: background 0.15s;
+}
+
+.album-card:hover {
+  background: var(--surface-hover);
+}
+
+.album-card .cover {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  display: block;
+  background: #2a2a2a;
+}
+
+.album-card .cover-placeholder {
+  width: 100%;
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #2a2a2a;
+  color: var(--text-muted);
+  font-size: 2.5rem;
+}
+
+.album-card .card-info {
+  padding: 0.5rem 0.6rem;
+}
+
+.album-card .card-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.album-card .card-subtitle {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 0.15rem;
+}
+
+/* ---- Tracklist ---- */
+#tracklist[hidden] { display: none; }
+
+#back-to-grid {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 0.9rem;
+  cursor: pointer;
+  padding: 0.25rem 0;
+  margin-bottom: 0.75rem;
+}
+
+#album-header {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+  margin-bottom: 1rem;
+}
+
+#album-cover {
+  width: 160px;
+  height: 160px;
+  object-fit: cover;
+  border-radius: var(--radius);
+  flex-shrink: 0;
+}
+
+#album-cover[hidden] { display: none; }
+
+#album-title {
+  font-size: 1.3rem;
+}
+
+#album-artist {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+#album-meta {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  margin-top: 0.25rem;
+}
+
+#track-list {
+  list-style: none;
+  padding: 0;
+}
+
+#track-list li {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+#track-list li:hover {
+  background: var(--surface-hover);
+}
+
+#track-list li[aria-current="true"] {
+  color: var(--accent);
+}
+
+#track-list li .track-num {
+  width: 2rem;
+  text-align: right;
+  margin-right: 0.75rem;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+#track-list li .track-name {
+  flex: 1;
+}
+
+/* ---- Footer / Player ---- */
+footer {
+  background: var(--surface);
+  border-top: 1px solid #333;
+}
+
+#player[hidden] { display: none; }
+
+#player {
+  padding: 0.75rem 1rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+#now-playing {
+  width: 200px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+#now-playing strong {
+  display: block;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#now-playing span {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+#progress-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+#progress-container time {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  min-width: 3em;
+  text-align: center;
+}
+
+#seek-bar {
+  flex: 1;
+  accent-color: var(--accent);
+}
+
+#controls {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+#controls button {
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--radius);
+}
+
+#controls button:hover {
+  background: var(--surface-hover);
+}
+
+#volume {
+  width: 80px;
+  accent-color: var(--accent);
+}
+
+/* ---- Cast button ---- */
+google-cast-launcher {
+  --connected-color: var(--accent);
+  --disconnected-color: var(--text-muted);
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
+  margin-left: 0.5rem;
+}
+
+/* ---- Responsive ---- */
+@media (max-width: 600px) {
+  #main-nav { flex-wrap: wrap; }
+  #search-bar { max-width: none; flex-basis: 100%; margin-left: 0; }
+  #card-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+  #album-header { flex-direction: column; }
+  #album-cover { width: 120px; height: 120px; }
+  #player { flex-wrap: wrap; }
+  #now-playing { width: 100%; }
+  #progress-container { order: 3; width: 100%; }
+}
