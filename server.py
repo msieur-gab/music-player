@@ -1,44 +1,78 @@
 #!/usr/bin/env python3
 """
-Music Player server.
-- Serves static files (HTML, CSS, JS, music) with Range request support
-- POST /api/download        → starts a background download, returns { id }
-- GET  /api/download/:id    → SSE stream of progress for that job
-- GET  /api/downloads       → list all jobs and their status
-- GET  /api/library         → JSON tree of artist/album/tracks
+MusiCast server — music file server, Chromecast caster, YouTube Music downloader.
+Drop into a Linux environment, run `python3 server.py`, done.
 """
 
 import os
-import sys
 import json
 import uuid
+import socket
 import mimetypes
 import threading
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from socketserver import ThreadingMixIn
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, unquote, parse_qs
 
 from downloader import bootstrap, download_playlist
+from cast_manager import CastManager
 
 PORT = 8000
 ROOT = os.path.dirname(os.path.abspath(__file__))
-MUSIC_ROOT = os.path.join(ROOT, "music")
+CONFIG_FILE = os.path.join(ROOT, "config.json")
+
+
+def load_config():
+    defaults = {"musicDir": os.path.join(ROOT, "music")}
+    if os.path.isfile(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                saved = json.load(f)
+            defaults.update(saved)
+        except Exception:
+            pass
+    return defaults
+
+
+def save_config(data):
+    try:
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"  Config save error: {e}")
+
+
+_config = load_config()
+MUSIC_ROOT = _config["musicDir"]
+
+
+def get_lan_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+cast_mgr = CastManager(port=PORT, get_lan_ip=get_lan_ip)
+
 
 # ---------------------------------------------------------------------------
-# Job tracker
+# Job tracker (download jobs)
 # ---------------------------------------------------------------------------
-jobs = {}  # id → { url, status, events[], done: bool }
+
+jobs = {}
 jobs_lock = threading.Lock()
 
 
 def _create_job(url):
     job_id = uuid.uuid4().hex[:8]
     job = {
-        "id": job_id,
-        "url": url,
-        "status": "queued",
-        "events": [],
-        "done": False,
+        "id": job_id, "url": url, "status": "queued",
+        "events": [], "done": False,
         "condition": threading.Condition(),
     }
     with jobs_lock:
@@ -76,7 +110,6 @@ def _run_job(job):
 # ---------------------------------------------------------------------------
 
 def _read_album_meta(album_path, first_mp3):
-    """Read genre and year from first track's ID3 tags."""
     meta = {"genre": "", "year": ""}
     try:
         from mutagen.id3 import ID3
@@ -93,7 +126,6 @@ def _read_album_meta(album_path, first_mp3):
 
 
 def scan_library():
-    """Return a list of album objects with full metadata."""
     albums = []
     if not os.path.isdir(MUSIC_ROOT):
         return albums
@@ -117,15 +149,11 @@ def scan_library():
             meta = _read_album_meta(album_path, files[0])
 
             albums.append({
-                "artist": artist,
-                "album": album,
-                "tracks": files,
-                "trackCount": len(files),
+                "artist": artist, "album": album,
+                "tracks": files, "trackCount": len(files),
                 "cover": f"/music/{artist}/{album}/cover.jpg" if has_cover else None,
-                "genre": meta["genre"],
-                "year": meta["year"],
+                "genre": meta["genre"], "year": meta["year"],
             })
-
     return albums
 
 
@@ -140,6 +168,7 @@ class Handler(SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Headers', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         super().end_headers()
 
     def do_OPTIONS(self):
@@ -147,58 +176,125 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        parsed = urlparse(self.path)
-
-        if parsed.path == '/api/library':
-            self._json_response(scan_library())
-
-        elif parsed.path == '/api/downloads':
-            summary = []
+        path = urlparse(self.path).path
+        if path == '/api/config':
+            self._json({
+                "lanIp": get_lan_ip(),
+                "port": PORT,
+                "musicDir": MUSIC_ROOT,
+            })
+        elif path == '/api/library':
+            self._json(scan_library())
+        elif path == '/api/devices':
+            self._json(cast_mgr.list_devices())
+        elif path == '/api/status':
+            self._json(cast_mgr.get_status())
+        elif path == '/api/downloads':
             with jobs_lock:
-                for j in jobs.values():
-                    summary.append({
-                        "id": j["id"],
-                        "url": j["url"],
-                        "status": j["status"],
-                        "done": j["done"],
-                    })
-            self._json_response(summary)
-
-        elif parsed.path.startswith('/api/download/'):
-            job_id = parsed.path.split('/')[-1]
+                self._json([{
+                    "id": j["id"], "url": j["url"],
+                    "status": j["status"], "done": j["done"],
+                } for j in jobs.values()])
+        elif path.startswith('/api/download/'):
+            job_id = path.split('/')[-1]
             with jobs_lock:
                 job = jobs.get(job_id)
             if not job:
-                self._json_response({"error": "Unknown job"}, status=404)
-                return
-            self._stream_job(job)
-
-        elif parsed.path.startswith('/music/'):
-            self._serve_with_ranges(parsed.path)
-
+                self._json({"error": "Unknown job"}, 404)
+            else:
+                self._stream_sse(job)
+        elif path == '/api/browse':
+            qs = parse_qs(urlparse(self.path).query)
+            browse_path = qs.get('path', [os.path.expanduser('~')])[0]
+            try:
+                entries = []
+                if browse_path != '/':
+                    entries.append({"name": "..", "path": os.path.dirname(browse_path)})
+                for name in sorted(os.listdir(browse_path)):
+                    full = os.path.join(browse_path, name)
+                    if os.path.isdir(full) and not name.startswith('.'):
+                        entries.append({"name": name, "path": full})
+                self._json({"current": browse_path, "dirs": entries})
+            except PermissionError:
+                self._json({"current": browse_path, "dirs": [], "error": "Permission denied"})
+            except FileNotFoundError:
+                self._json({"current": os.path.expanduser('~'), "dirs": [], "error": "Not found"})
+        elif path.startswith('/music/'):
+            self._serve_ranged(path)
         else:
             super().do_GET()
 
     def do_POST(self):
-        parsed = urlparse(self.path)
+        path = urlparse(self.path).path
+        try:
+            body = self._read_body()
+        except Exception as e:
+            self._json({"error": f"Bad request: {e}"}, 400)
+            return
 
-        if parsed.path == '/api/download':
-            length = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(length)) if length else {}
-            url = body.get('url', '').strip()
-            if not url:
-                self._json_response({"error": "Missing url"}, status=400)
-                return
+        try:
+            if path == '/api/download':
+                url = body.get('url', '').strip()
+                if not url:
+                    self._json({"error": "Missing url"}, 400)
+                    return
+                job = _create_job(url)
+                threading.Thread(target=_run_job, args=(job,), daemon=True).start()
+                self._json({"id": job["id"], "status": "queued"})
 
-            job = _create_job(url)
-            t = threading.Thread(target=_run_job, args=(job,), daemon=True)
-            t.start()
-            self._json_response({"id": job["id"], "status": "queued"})
+            elif path == '/api/cast':
+                device_id = body.get('deviceId')
+                if not device_id:
+                    self._json({"error": "Missing deviceId"}, 400)
+                    return
+                result = cast_mgr.cast(
+                    device_id, body.get('track', {}),
+                    body.get('queue'), body.get('queueIndex', 0),
+                    body.get('baseUrl'),
+                )
+                self._json(result)
 
-        else:
-            self.send_error(404)
+            elif path == '/api/config':
+                global MUSIC_ROOT, _config
+                changed = False
+                if 'musicDir' in body:
+                    new_dir = body['musicDir'].strip()
+                    if new_dir and os.path.isabs(new_dir):
+                        os.makedirs(new_dir, exist_ok=True)
+                        MUSIC_ROOT = new_dir
+                        _config['musicDir'] = new_dir
+                        changed = True
+                    else:
+                        self._json({"error": "musicDir must be an absolute path"}, 400)
+                        return
+                if changed:
+                    save_config(_config)
+                self._json({"ok": True, "musicDir": MUSIC_ROOT})
 
-    def _json_response(self, data, status=200):
+            elif path == '/api/control':
+                action = body.get('action')
+                if not action:
+                    self._json({"error": "Missing action"}, 400)
+                    return
+                self._json(cast_mgr.control(action, body.get('value')))
+
+            else:
+                self.send_error(404)
+
+        except Exception as e:
+            print(f"  POST {path} error: {e}")
+            try:
+                self._json({"error": str(e)}, 500)
+            except Exception:
+                pass
+
+    def _read_body(self):
+        length = int(self.headers.get('Content-Length', 0))
+        if length:
+            return json.loads(self.rfile.read(length))
+        return {}
+
+    def _json(self, data, status=200):
         body = json.dumps(data).encode()
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
@@ -206,8 +302,7 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _stream_job(self, job):
-        """SSE stream: sends all past events then waits for new ones."""
+    def _stream_sse(self, job):
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
         self.send_header('Cache-Control', 'no-cache')
@@ -217,27 +312,22 @@ class Handler(SimpleHTTPRequestHandler):
         cursor = 0
         while True:
             with job["condition"]:
-                # Wait for new events
                 while cursor >= len(job["events"]) and not job["done"]:
                     job["condition"].wait(timeout=5)
-
-                # Send any new events
-                new_events = job["events"][cursor:]
+                new = job["events"][cursor:]
                 cursor = len(job["events"])
                 done = job["done"]
 
-            for event in new_events:
+            for event in new:
                 try:
                     self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
                     self.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError):
                     return
-
             if done:
                 return
 
-    def _serve_with_ranges(self, path):
-        """Serve a file with HTTP Range support (required by Chromecast)."""
+    def _serve_ranged(self, path):
         rel = unquote(path).lstrip('/')
         filepath = os.path.join(ROOT, rel)
 
@@ -247,12 +337,11 @@ class Handler(SimpleHTTPRequestHandler):
 
         file_size = os.path.getsize(filepath)
         content_type = mimetypes.guess_type(filepath)[0] or 'application/octet-stream'
-
         range_header = self.headers.get('Range')
+
         if range_header:
             try:
-                range_spec = range_header.replace('bytes=', '')
-                start_str, end_str = range_spec.split('-')
+                start_str, end_str = range_header.replace('bytes=', '').split('-')
                 start = int(start_str) if start_str else 0
                 end = int(end_str) if end_str else file_size - 1
                 end = min(end, file_size - 1)
@@ -287,7 +376,6 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header('Content-Length', file_size)
             self.send_header('Accept-Ranges', 'bytes')
             self.end_headers()
-
             try:
                 with open(filepath, 'rb') as f:
                     while True:
@@ -303,11 +391,14 @@ class Handler(SimpleHTTPRequestHandler):
             path = args[0].split()[1] if args and isinstance(args[0], str) else ''
         except (IndexError, AttributeError):
             path = ''
-        if path.startswith('/api') or '404' in str(args):
+        # Show API, music file requests (from Chromecasts), and errors
+        if path.startswith('/api/status'):
+            return  # too noisy
+        if path.startswith('/api') or path.startswith('/music/') or '404' in str(args):
             super().log_message(fmt, *args)
 
 
-class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+class ThreadedServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
@@ -317,10 +408,22 @@ if __name__ == '__main__':
     print("Bootstrapping dependencies...")
     bootstrap()
 
-    server = ThreadedHTTPServer(('0.0.0.0', PORT), Handler)
-    print(f"Serving on http://localhost:{PORT}")
+    lan_ip = get_lan_ip()
+
+    print(f"\n  MusiCast")
+    print(f"  {'=' * 40}")
+    print(f"  Local:   http://localhost:{PORT}")
+    print(f"  LAN:     http://{lan_ip}:{PORT}")
+    print(f"  Music:   {MUSIC_ROOT}")
+    print(f"  {'=' * 40}\n")
+
+    print("Discovering Chromecast devices...")
+    cast_mgr.start_discovery()
+
+    server = ThreadedServer(('0.0.0.0', PORT), Handler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nShutting down.")
+        print("\nShutting down...")
+        cast_mgr.stop()
         server.shutdown()

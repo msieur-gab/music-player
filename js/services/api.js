@@ -1,24 +1,67 @@
 const BASE = '';
 
-/** Fetch the music library as a flat list of album objects */
 export async function fetchLibrary() {
-  const res = await fetch(`${BASE}/api/library`);
-  if (!res.ok) throw new Error('Failed to load library');
-  return res.json();
+  const r = await fetch(`${BASE}/api/library`);
+  return r.json();
 }
 
-/** Start a background download, returns { id, status } */
+export async function fetchDevices() {
+  const r = await fetch(`${BASE}/api/devices`);
+  return r.json();
+}
+
+export async function fetchStatus() {
+  const r = await fetch(`${BASE}/api/status`);
+  return r.json();
+}
+
+export async function castTrack(deviceId, track, queue = null, queueIndex = 0, baseUrl = null) {
+  const r = await fetch(`${BASE}/api/cast`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId, track, queue, queueIndex, baseUrl }),
+  });
+  return r.json();
+}
+
+export async function fetchConfig() {
+  const r = await fetch(`${BASE}/api/config`);
+  return r.json();
+}
+
+export async function updateConfig(data) {
+  const r = await fetch(`${BASE}/api/config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return r.json();
+}
+
+export async function browseFolders(path = '') {
+  const q = path ? `?path=${encodeURIComponent(path)}` : '';
+  const r = await fetch(`${BASE}/api/browse${q}`);
+  return r.json();
+}
+
+export async function controlPlayback(action, value = null) {
+  const r = await fetch(`${BASE}/api/control`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, value }),
+  });
+  return r.json();
+}
+
 export async function startDownload(url) {
-  const res = await fetch(`${BASE}/api/download`, {
+  const r = await fetch(`${BASE}/api/download`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url }),
   });
-  if (!res.ok) throw new Error('Failed to start download');
-  return res.json();
+  return r.json();
 }
 
-/** Subscribe to SSE progress for a job */
-export function streamJob(jobId) {
-  return new EventSource(`${BASE}/api/download/${jobId}`);
+export function streamJob(id) {
+  return new EventSource(`${BASE}/api/download/${id}`);
 }

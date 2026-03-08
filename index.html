@@ -3,75 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Music Player</title>
-  <link rel="stylesheet" href="css/style.css">
+  <title>MusiCast</title>
+  <link rel="stylesheet" href="css/tokens.css">
+  <style>
+    html, body { height: 100%; margin: 0; overflow: clip; }
+  </style>
 </head>
 <body>
-  <header>
-    <h1>Music Player</h1>
-    <form id="download-form" role="search">
-      <input
-        type="url"
-        id="playlist-url"
-        placeholder="Paste a YouTube Music playlist URL…"
-        autocomplete="off"
-        required
-      >
-      <button type="submit">Download</button>
-    </form>
-    <output id="download-status" role="status" hidden></output>
-  </header>
-
-  <nav id="main-nav" aria-label="Library navigation">
-    <div id="nav-tabs">
-      <button class="tab active" data-view="artists">Artists</button>
-      <button class="tab" data-view="albums">Albums</button>
-      <button class="tab" data-view="genres">Genres</button>
-    </div>
-    <div id="search-bar">
-      <input type="search" id="search-input" placeholder="Search artists, albums, tracks…" autocomplete="off">
-    </div>
-  </nav>
-
-  <main>
-    <section id="card-grid" aria-label="Albums"></section>
-
-    <section id="tracklist" aria-label="Album tracks" hidden>
-      <button id="back-to-grid" aria-label="Back">&larr; Back</button>
-      <header id="album-header">
-        <img id="album-cover" src="" alt="" hidden>
-        <div>
-          <h2 id="album-title"></h2>
-          <p id="album-artist"></p>
-          <p id="album-meta"></p>
-        </div>
-      </header>
-      <ol id="track-list"></ol>
-    </section>
-  </main>
-
-  <footer>
-    <article id="player" aria-label="Now playing" hidden>
-      <div id="now-playing">
-        <strong id="track-title">—</strong>
-        <span id="track-artist"></span>
-      </div>
-      <div id="progress-container">
-        <time id="current-time">0:00</time>
-        <input type="range" id="seek-bar" min="0" max="100" value="0" step="0.1" aria-label="Seek">
-        <time id="duration">0:00</time>
-      </div>
-      <nav id="controls" aria-label="Playback controls">
-        <button id="btn-prev" aria-label="Previous" title="Previous">⏮</button>
-        <button id="btn-play" aria-label="Play" title="Play">▶</button>
-        <button id="btn-next" aria-label="Next" title="Next">⏭</button>
-        <input type="range" id="volume" min="0" max="1" value="1" step="0.01" aria-label="Volume">
-        <google-cast-launcher id="btn-cast"></google-cast-launcher>
-      </nav>
-    </article>
-  </footer>
-
-  <script src="https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1"></script>
+  <music-app></music-app>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

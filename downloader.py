@@ -93,12 +93,20 @@ def _ensure_mutagen():
         _pip_install("mutagen")
 
 
+def _ensure_pychromecast():
+    try:
+        import pychromecast  # noqa: F401
+    except ImportError:
+        print("[bootstrap] Installing pychromecast...")
+        _pip_install("pychromecast")
+
 
 def bootstrap():
     _ensure_venv()  # creates venv + re-execs into it if needed
     _ensure_yt_dlp()
     _ensure_ffmpeg()
     _ensure_mutagen()
+    _ensure_pychromecast()
 
 
 # ---------------------------------------------------------------------------
