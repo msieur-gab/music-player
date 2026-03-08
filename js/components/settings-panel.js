@@ -1,4 +1,4 @@
-import { fetchConfig, updateConfig, browseFolders } from '../services/api.js';
+import { fetchConfig, updateConfig, browseFolders, startAnalysis, streamAnalysis } from '../services/api.js';
 
 const tpl = document.createElement('template');
 tpl.innerHTML = `
@@ -272,6 +272,15 @@ h3 {
   background: rgba(204,68,68,0.06);
 }
 
+.analyze-progress {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.analyze-progress:empty { display: none; }
+.analyze-progress .done { color: var(--accent); font-weight: 600; }
+
 @media (max-width: 480px) {
   .sheet { padding: 20px 16px; }
 }
@@ -324,6 +333,15 @@ h3 {
       </div>
       <div class="hint">Only needed on Chromebooks (Crostini). Leave empty on Mac/Linux.</div>
       <div class="status" id="ip-status"></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Audio analysis</div>
+    <div class="field">
+      <div class="hint" style="margin-bottom:8px">Scan your library to extract audio features. This enables "sounds like" recommendations based on how tracks actually sound — no genre tags needed.</div>
+      <button class="save-btn" id="analyze-btn" style="width:100%">Analyze library</button>
+      <div class="analyze-progress" id="analyze-progress"></div>
     </div>
   </div>
 </div>
@@ -402,6 +420,8 @@ class SettingsPanel extends HTMLElement {
       $('browser').removeAttribute('open');
       this._saveDir();
     });
+
+    $('analyze-btn').addEventListener('click', () => this._startAnalysis());
   }
 
   async _browse(path) {
@@ -455,6 +475,54 @@ class SettingsPanel extends HTMLElement {
       }
     } catch {
       $('dir-status').textContent = 'Failed to save';
+    }
+  }
+
+  async _startAnalysis() {
+    const $ = id => this.shadowRoot.getElementById(id);
+    const btn = $('analyze-btn');
+    const progress = $('analyze-progress');
+
+    btn.disabled = true;
+    btn.textContent = 'Analyzing...';
+    progress.innerHTML = 'Starting analysis...';
+
+    try {
+      const { id } = await startAnalysis();
+      const source = streamAnalysis(id);
+
+      source.addEventListener('message', (e) => {
+        try {
+          const data = JSON.parse(e.data);
+
+          if (data.status === 'complete') {
+            source.close();
+            progress.innerHTML = `<span class="done">${data.message}</span>`;
+            btn.disabled = false;
+            btn.textContent = 'Analyze library';
+          } else if (data.status === 'error') {
+            source.close();
+            progress.textContent = data.message || 'Analysis failed';
+            btn.disabled = false;
+            btn.textContent = 'Analyze library';
+          } else {
+            progress.textContent = data.message;
+          }
+        } catch {
+          progress.textContent = e.data;
+        }
+      });
+
+      source.addEventListener('error', () => {
+        source.close();
+        progress.textContent = 'Connection lost';
+        btn.disabled = false;
+        btn.textContent = 'Analyze library';
+      });
+    } catch (err) {
+      progress.textContent = `Failed: ${err.message}`;
+      btn.disabled = false;
+      btn.textContent = 'Analyze library';
     }
   }
 

@@ -65,3 +65,18 @@ export async function startDownload(url) {
 export function streamJob(id) {
   return new EventSource(`${BASE}/api/download/${id}`);
 }
+
+export async function startAnalysis() {
+  const r = await fetch(`${BASE}/api/analyze`, { method: 'POST' });
+  return r.json();
+}
+
+export function streamAnalysis(id) {
+  return new EventSource(`${BASE}/api/analyze/${id}`);
+}
+
+export async function fetchSimilar(artist, album, title, limit = 10) {
+  const key = `${artist}::${album}::${title}`;
+  const r = await fetch(`${BASE}/api/similar?key=${encodeURIComponent(key)}&limit=${limit}`);
+  return r.json();
+}

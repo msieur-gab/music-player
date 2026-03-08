@@ -16,6 +16,7 @@ from urllib.parse import urlparse, unquote, parse_qs
 
 from downloader import bootstrap, download_playlist
 from cast_manager import CastManager
+from analyzer import analyze_library, find_similar
 
 PORT = 8000
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -93,6 +94,29 @@ def _run_job(job):
         result["status"] = "complete"
         with job["condition"]:
             job["events"].append(result)
+            job["status"] = "complete"
+            job["done"] = True
+            job["condition"].notify_all()
+    except Exception as e:
+        err = {"message": f"Error: {e}", "status": "error"}
+        with job["condition"]:
+            job["events"].append(err)
+            job["status"] = "error"
+            job["done"] = True
+            job["condition"].notify_all()
+
+
+def _run_analysis(job):
+    job["status"] = "analyzing"
+
+    def on_progress(data):
+        with job["condition"]:
+            job["events"].append(data)
+            job["condition"].notify_all()
+
+    try:
+        analyze_library(MUSIC_ROOT, on_progress=on_progress)
+        with job["condition"]:
             job["status"] = "complete"
             job["done"] = True
             job["condition"].notify_all()
@@ -203,6 +227,22 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json({"error": "Unknown job"}, 404)
             else:
                 self._stream_sse(job)
+        elif path.startswith('/api/analyze/'):
+            job_id = path.split('/')[-1]
+            with jobs_lock:
+                job = jobs.get(job_id)
+            if not job:
+                self._json({"error": "Unknown job"}, 404)
+            else:
+                self._stream_sse(job)
+        elif path == '/api/similar':
+            qs = parse_qs(urlparse(self.path).query)
+            key = qs.get('key', [''])[0]
+            limit = int(qs.get('limit', ['10'])[0])
+            if not key:
+                self._json({"error": "Missing key param"}, 400)
+            else:
+                self._json(find_similar(key, MUSIC_ROOT, limit))
         elif path == '/api/browse':
             qs = parse_qs(urlparse(self.path).query)
             browse_path = qs.get('path', [os.path.expanduser('~')])[0]
@@ -240,6 +280,11 @@ class Handler(SimpleHTTPRequestHandler):
                     return
                 job = _create_job(url)
                 threading.Thread(target=_run_job, args=(job,), daemon=True).start()
+                self._json({"id": job["id"], "status": "queued"})
+
+            elif path == '/api/analyze':
+                job = _create_job("analyze")
+                threading.Thread(target=_run_analysis, args=(job,), daemon=True).start()
                 self._json({"id": job["id"], "status": "queued"})
 
             elif path == '/api/cast':
