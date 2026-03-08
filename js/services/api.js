@@ -80,3 +80,37 @@ export async function fetchSimilar(artist, album, title, limit = 10) {
   const r = await fetch(`${BASE}/api/similar?key=${encodeURIComponent(key)}&limit=${limit}`);
   return r.json();
 }
+
+export async function fetchZones() {
+  const r = await fetch(`${BASE}/api/zones`);
+  return r.json();
+}
+
+export async function fetchPlaylist(zone, limit = 25) {
+  const r = await fetch(`${BASE}/api/playlist?zone=${encodeURIComponent(zone)}&limit=${limit}`);
+  return r.json();
+}
+
+export async function fetchSavedPlaylists() {
+  const r = await fetch(`${BASE}/api/playlists`);
+  return r.json();
+}
+
+export async function fetchSavedPlaylist(id) {
+  const r = await fetch(`${BASE}/api/playlists/${id}`);
+  return r.json();
+}
+
+export async function savePlaylistApi(name, zone, tracks) {
+  const r = await fetch(`${BASE}/api/playlists`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, zone, tracks }),
+  });
+  return r.json();
+}
+
+export async function deleteSavedPlaylist(id) {
+  const r = await fetch(`${BASE}/api/playlists/${id}`, { method: 'DELETE' });
+  return r.json();
+}

@@ -1,9 +1,10 @@
-import { fetchLibrary, fetchDevices, fetchStatus, castTrack, controlPlayback } from '../services/api.js';
+import { fetchLibrary, fetchDevices, fetchStatus, castTrack, controlPlayback, fetchPlaylist, fetchZones, fetchSavedPlaylist, savePlaylistApi, deleteSavedPlaylist } from '../services/api.js';
 import { recordPlay } from '../services/stats.js';
 import './nav-rail.js';
 import './home-view.js';
 import './album-grid.js';
 import './album-detail.js';
+import './playlist-list.js';
 import './now-playing.js';
 import './device-picker.js';
 import './download-panel.js';
@@ -31,8 +32,9 @@ tpl.innerHTML = `
 nav-rail          { grid-area: rail; }
 home-view         { grid-area: feed; display: none; min-height: 0; }
 home-view[active] { display: block; }
-.library          { grid-area: feed; display: none; min-height: 0; }
-.library[active]  { display: flex; flex-direction: column; }
+.albums-view          { grid-area: feed; display: none; min-height: 0; }
+.albums-view[active]  { display: flex; flex-direction: column; }
+playlist-list     { grid-area: feed; }
 
 /* ── Detail panel (slides in from right like Loomr reader) ── */
 album-detail {
@@ -47,7 +49,7 @@ album-detail {
   padding-bottom: 120px;
 }
 
-/* ── Library internals ── */
+/* ── Albums view header ── */
 .lib-header {
   display: flex;
   align-items: center;
@@ -57,21 +59,12 @@ album-detail {
   flex-shrink: 0;
 }
 
-.tabs { display: flex; gap: 2px; }
-.tab {
-  padding: 6px 12px;
-  border: none;
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 13px;
-  font-weight: 500;
-  font-family: inherit;
-  cursor: pointer;
-  transition: all var(--transition);
+.view-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0;
 }
-.tab:hover { color: var(--text); background: var(--bg-hover); }
-.tab.active { color: var(--accent); background: var(--accent-light); }
 
 .spacer { flex: 1; }
 
@@ -101,13 +94,9 @@ album-detail {
 
 <home-view id="home" active></home-view>
 
-<div class="library" id="library">
+<div class="albums-view" id="albums-view">
   <div class="lib-header">
-    <div class="tabs" id="tabs">
-      <button class="tab active" data-view="artists">Artists</button>
-      <button class="tab" data-view="albums">Albums</button>
-      <button class="tab" data-view="genres">Genres</button>
-    </div>
+    <h2 class="view-title">Albums</h2>
     <span class="spacer"></span>
     <input class="search" id="search" type="search" placeholder="Search..." autocomplete="off">
   </div>
@@ -115,6 +104,8 @@ album-detail {
     <album-grid id="grid"></album-grid>
   </div>
 </div>
+
+<playlist-list id="playlists"></playlist-list>
 
 <album-detail id="detail"></album-detail>
 
@@ -171,19 +162,14 @@ class MusicApp extends HTMLElement {
       this._navigateToAlbum(e.detail.artist, e.detail.album);
     });
 
-    $('home').addEventListener('navigate-artist', (e) => {
-      this._setView('library');
-      $('search').value = e.detail.artist;
-      $('grid').search = e.detail.artist;
+    $('home').addEventListener('open-zone', (e) => {
+      this._openZone(e.detail.zone);
     });
 
-    // ── Library tabs ──
-    $('tabs').addEventListener('click', (e) => {
-      const tab = e.target.closest('.tab');
-      if (!tab) return;
-      $('tabs').querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-      $('grid').view = tab.dataset.view;
+    $('home').addEventListener('navigate-artist', (e) => {
+      this._setView('albums');
+      $('search').value = e.detail.artist;
+      $('grid').search = e.detail.artist;
     });
 
     // ── Search ──
@@ -194,7 +180,29 @@ class MusicApp extends HTMLElement {
     // ── Album → detail (slide panel open) ──
     $('grid').addEventListener('album-select', (e) => {
       $('detail').album = e.detail;
+      $('detail').backLabel = 'Albums';
       this.setAttribute('detail-open', '');
+    });
+
+    // ── Playlists ──
+    $('playlists').addEventListener('playlist-open', async (e) => {
+      const data = await fetchSavedPlaylist(e.detail.id);
+      if (!data || data.error) return;
+      $('detail').playlist = {
+        label: data.name,
+        desc: data.zoneLabel || data.zoneDesc || '',
+        zoneId: data.zone,
+        tracks: data.tracks,
+        saved: true,
+      };
+      $('detail').backLabel = 'Playlists';
+      this.setAttribute('detail-open', '');
+    });
+
+    $('playlists').addEventListener('playlist-delete', async (e) => {
+      if (!confirm(`Delete "${e.detail.name}"?`)) return;
+      await deleteSavedPlaylist(e.detail.id);
+      $('playlists').refresh();
     });
 
     // ── Detail → back (slide panel closed) ──
@@ -205,6 +213,17 @@ class MusicApp extends HTMLElement {
     // ── Track play ──
     $('detail').addEventListener('track-play', (e) => {
       this._play(e.detail);
+    });
+
+    $('detail').addEventListener('playlist-play', (e) => {
+      this._playPlaylist(e.detail.tracks, e.detail.index);
+    });
+
+    // ── Save playlist ──
+    $('detail').addEventListener('save-playlist', async (e) => {
+      const { name, zone, tracks } = e.detail;
+      await savePlaylistApi(name, zone, tracks);
+      $('detail').saved = true;
     });
 
     // ── Now-playing controls ──
@@ -297,26 +316,32 @@ class MusicApp extends HTMLElement {
     $('rail').active = tab;
 
     const home = $('home');
-    const library = $('library');
+    const albumsView = $('albums-view');
+    const playlists = $('playlists');
 
     home.removeAttribute('active');
-    library.removeAttribute('active');
+    albumsView.removeAttribute('active');
+    playlists.removeAttribute('active');
 
     if (tab === 'home') {
       home.setAttribute('active', '');
       home.refresh();
-    } else if (tab === 'library') {
-      library.setAttribute('active', '');
+    } else if (tab === 'albums') {
+      albumsView.setAttribute('active', '');
+    } else if (tab === 'playlists') {
+      playlists.setAttribute('active', '');
+      playlists.refresh();
     }
   }
 
   _navigateToAlbum(artist, album) {
     const $ = id => this.shadowRoot.getElementById(id);
-    this._setView('library');
+    this._setView('albums');
 
     const found = this._albums.find(a => a.artist === artist && a.album === album);
     if (found) {
       $('detail').album = found;
+      $('detail').backLabel = 'Albums';
       this.setAttribute('detail-open', '');
     }
   }
@@ -357,6 +382,57 @@ class MusicApp extends HTMLElement {
       this.shadowRoot.getElementById('grid').albums = this._albums;
     } catch (e) {
       console.error('Library load failed:', e);
+    }
+  }
+
+  // ── Zone playlist ──
+
+  async _openZone(zone) {
+    try {
+      const [tracks, zones] = await Promise.all([
+        fetchPlaylist(zone),
+        fetchZones(),
+      ]);
+      if (!tracks.length) return;
+
+      const zoneMeta = zones.find(z => z.id === zone) || {};
+      const detail = this.shadowRoot.getElementById('detail');
+      detail.playlist = {
+        label: zoneMeta.label || zone,
+        desc: zoneMeta.desc || '',
+        zoneId: zone,
+        tracks,
+        saved: false,
+      };
+      detail.backLabel = 'Home';
+      this.setAttribute('detail-open', '');
+    } catch (e) {
+      console.error('Zone playlist failed:', e);
+    }
+  }
+
+  // ── Playlist playback (zone playlists) ──
+
+  _playPlaylist(tracks, index) {
+    this._queue = tracks.map(t => ({
+      url: `/music/${t.file.split('/').map(s => encodeURIComponent(s)).join('/')}`,
+      title: t.title,
+      artist: t.artist,
+      album: t.album,
+      cover: t.cover || null,
+    }));
+    this._queueIndex = index;
+
+    if (this._mode === 'cast' && this._selectedDevice) {
+      this._castQueue(this._queue, index).then(ok => {
+        if (!ok) {
+          this._mode = 'local';
+          this._playLocal();
+        }
+      });
+    } else {
+      this._mode = 'local';
+      this._playLocal();
     }
   }
 
@@ -517,13 +593,7 @@ class MusicApp extends HTMLElement {
           }
           if (status.state !== 'idle') {
             const playing = this._queue[this._queueIndex];
-            if (playing && detail._album &&
-                playing.artist === detail._album.artist &&
-                playing.album === detail._album.album) {
-              detail.highlightTrack(status.queueIndex);
-            } else {
-              detail.highlightTrack(-1);
-            }
+            detail.highlightByUrl(playing ? playing.url : null);
           }
         } catch { /* silent */ }
       } else {
@@ -542,14 +612,7 @@ class MusicApp extends HTMLElement {
             queueLength: this._queue.length,
             device: null,
           });
-          const playing = this._queue[this._queueIndex];
-          if (playing && detail._album &&
-              playing.artist === detail._album.artist &&
-              playing.album === detail._album.album) {
-            detail.highlightTrack(this._queueIndex);
-          } else {
-            detail.highlightTrack(-1);
-          }
+          detail.highlightByUrl(track.url);
           this._syncMediaSessionPosition();
         } else {
           player.update({ state: 'idle' });

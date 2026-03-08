@@ -100,8 +100,12 @@ button.has-badge .badge { animation: pulse 1.8s ease-in-out infinite; }
   <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
 </button>
 
-<button data-tab="library" title="Library">
+<button data-tab="albums" title="Albums">
   <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
+</button>
+
+<button data-tab="playlists" title="Playlists">
+  <svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
 </button>
 
 <span class="spacer"></span>

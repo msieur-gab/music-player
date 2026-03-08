@@ -116,17 +116,11 @@ class AlbumGrid extends HTMLElement {
     this.shadowRoot.appendChild(tpl.content.cloneNode(true));
     this._grid = this.shadowRoot.querySelector('.grid');
     this._albums = [];
-    this._view = 'artists';
     this._search = '';
   }
 
   set albums(list) {
     this._albums = list || [];
-    this._render();
-  }
-
-  set view(v) {
-    this._view = v;
     this._render();
   }
 
@@ -146,87 +140,65 @@ class AlbumGrid extends HTMLElement {
     );
   }
 
-  _grouped(albums) {
-    const groups = {};
-    for (const a of albums) {
-      let key;
-      if (this._view === 'artists') key = a.artist;
-      else if (this._view === 'albums') key = (a.album[0] || '#').toUpperCase();
-      else if (this._view === 'genres') key = a.genre || 'Unknown';
-      else key = a.artist;
-      (groups[key] ??= []).push(a);
-    }
-    return Object.keys(groups).sort((a, b) => a.localeCompare(b))
-      .map(key => ({ key, albums: groups[key] }));
-  }
-
   _render() {
-    const filtered = this._filtered();
-    const groups = this._grouped(filtered);
+    const albums = this._filtered();
     this._grid.innerHTML = '';
 
-    if (!filtered.length) {
+    if (!albums.length) {
       this._grid.innerHTML = `<div class="empty">
         ${this._albums.length ? 'No results' : 'No music yet — paste a YouTube Music playlist URL to get started.'}
       </div>`;
       return;
     }
 
-    for (const group of groups) {
-      const header = document.createElement('div');
-      header.className = 'group-header';
-      header.textContent = group.key;
-      this._grid.appendChild(header);
+    for (const album of albums) {
+      const card = document.createElement('article');
+      card.className = 'card';
 
-      for (const album of group.albums) {
-        const card = document.createElement('article');
-        card.className = 'card';
-
-        if (album.cover) {
-          const img = document.createElement('img');
-          img.className = 'cover';
-          img.src = album.cover;
-          img.alt = album.album;
-          img.loading = 'lazy';
-          card.appendChild(img);
-        } else {
-          const ph = document.createElement('div');
-          ph.className = 'cover-ph';
-          ph.innerHTML = '<svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>';
-          card.appendChild(ph);
-        }
-
-        const info = document.createElement('div');
-        info.className = 'info';
-
-        const title = document.createElement('div');
-        title.className = 'title';
-        title.textContent = album.album;
-
-        const sub = document.createElement('div');
-        sub.className = 'subtitle';
-        sub.textContent = album.artist;
-
-        info.append(title, sub);
-
-        if (album.year || album.trackCount) {
-          const meta = document.createElement('div');
-          meta.className = 'meta';
-          const parts = [];
-          if (album.year) parts.push(album.year);
-          parts.push(`${album.trackCount} tracks`);
-          meta.textContent = parts.join(' \u2022 ');
-          info.appendChild(meta);
-        }
-
-        card.appendChild(info);
-        card.addEventListener('click', () => {
-          this.dispatchEvent(new CustomEvent('album-select', {
-            bubbles: true, composed: true, detail: album,
-          }));
-        });
-        this._grid.appendChild(card);
+      if (album.cover) {
+        const img = document.createElement('img');
+        img.className = 'cover';
+        img.src = album.cover;
+        img.alt = album.album;
+        img.loading = 'lazy';
+        card.appendChild(img);
+      } else {
+        const ph = document.createElement('div');
+        ph.className = 'cover-ph';
+        ph.innerHTML = '<svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>';
+        card.appendChild(ph);
       }
+
+      const info = document.createElement('div');
+      info.className = 'info';
+
+      const title = document.createElement('div');
+      title.className = 'title';
+      title.textContent = album.album;
+
+      const sub = document.createElement('div');
+      sub.className = 'subtitle';
+      sub.textContent = album.artist;
+
+      info.append(title, sub);
+
+      if (album.year || album.trackCount) {
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+        const parts = [];
+        if (album.year) parts.push(album.year);
+        parts.push(`${album.trackCount} tracks`);
+        meta.textContent = parts.join(' \u2022 ');
+        info.appendChild(meta);
+      }
+
+      card.appendChild(info);
+      card.addEventListener('click', () => {
+        this.dispatchEvent(new CustomEvent('album-select', {
+          bubbles: true, composed: true, detail: album,
+        }));
+      });
+      this._grid.appendChild(card);
     }
   }
 }

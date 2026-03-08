@@ -16,7 +16,8 @@ from urllib.parse import urlparse, unquote, parse_qs
 
 from downloader import bootstrap, download_playlist
 from cast_manager import CastManager
-from analyzer import analyze_library, find_similar
+from analyzer import analyze_library, find_similar, get_zones, generate_playlist, migrate_from_json
+from playlist_manager import save_playlist, list_playlists, get_playlist, delete_playlist
 
 PORT = 8000
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -192,7 +193,7 @@ class Handler(SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Headers', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
         super().end_headers()
 
     def do_OPTIONS(self):
@@ -243,6 +244,16 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json({"error": "Missing key param"}, 400)
             else:
                 self._json(find_similar(key, MUSIC_ROOT, limit))
+        elif path == '/api/zones':
+            self._json(get_zones(MUSIC_ROOT))
+        elif path == '/api/playlist':
+            qs = parse_qs(urlparse(self.path).query)
+            zone = qs.get('zone', [''])[0]
+            limit = int(qs.get('limit', ['25'])[0])
+            if not zone:
+                self._json({"error": "Missing zone param"}, 400)
+            else:
+                self._json(generate_playlist(zone, MUSIC_ROOT, limit))
         elif path == '/api/browse':
             qs = parse_qs(urlparse(self.path).query)
             browse_path = qs.get('path', [os.path.expanduser('~')])[0]
@@ -259,6 +270,19 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json({"current": browse_path, "dirs": [], "error": "Permission denied"})
             except FileNotFoundError:
                 self._json({"current": os.path.expanduser('~'), "dirs": [], "error": "Not found"})
+        elif path == '/api/playlists':
+            self._json(list_playlists(MUSIC_ROOT))
+        elif path.startswith('/api/playlists/'):
+            try:
+                pid = int(path.split('/')[-1])
+            except ValueError:
+                self._json({"error": "Invalid id"}, 400)
+                return
+            data = get_playlist(pid, MUSIC_ROOT)
+            if data:
+                self._json(data)
+            else:
+                self._json({"error": "Not found"}, 404)
         elif path.startswith('/music/'):
             self._serve_ranged(path)
         else:
@@ -316,6 +340,16 @@ class Handler(SimpleHTTPRequestHandler):
                     save_config(_config)
                 self._json({"ok": True, "musicDir": MUSIC_ROOT})
 
+            elif path == '/api/playlists':
+                name = body.get('name', '').strip()
+                zone = body.get('zone', '')
+                tracks = body.get('tracks', [])
+                if not name or not tracks:
+                    self._json({"error": "Missing name or tracks"}, 400)
+                    return
+                pid = save_playlist(name, zone, tracks, MUSIC_ROOT)
+                self._json({"id": pid, "ok": True})
+
             elif path == '/api/control':
                 action = body.get('action')
                 if not action:
@@ -332,6 +366,19 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json({"error": str(e)}, 500)
             except Exception:
                 pass
+
+    def do_DELETE(self):
+        path = urlparse(self.path).path
+        if path.startswith('/api/playlists/'):
+            try:
+                pid = int(path.split('/')[-1])
+            except ValueError:
+                self._json({"error": "Invalid id"}, 400)
+                return
+            delete_playlist(pid, MUSIC_ROOT)
+            self._json({"ok": True})
+        else:
+            self.send_error(404)
 
     def _read_body(self):
         length = int(self.headers.get('Content-Length', 0))
@@ -461,6 +508,11 @@ if __name__ == '__main__':
     print(f"  LAN:     http://{lan_ip}:{PORT}")
     print(f"  Music:   {MUSIC_ROOT}")
     print(f"  {'=' * 40}\n")
+
+    # Auto-migrate from JSON if old data exists
+    migrated = migrate_from_json(MUSIC_ROOT)
+    if migrated:
+        print(f"  Migrated {migrated} tracks from JSON to SQLite.")
 
     print("Discovering Chromecast devices...")
     cast_mgr.start_discovery()

@@ -104,6 +104,38 @@ tpl.innerHTML = `
   fill: currentColor; stroke: none;
 }
 
+.actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.save-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.save-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.save-btn[hidden] { display: none; }
+.save-btn svg {
+  width: 14px; height: 14px;
+  stroke: currentColor; fill: none;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+
 .tracks {
   list-style: none;
   padding: 0;
@@ -131,7 +163,29 @@ tpl.innerHTML = `
 }
 .track[aria-current="true"] .track-num { color: var(--accent); }
 
-.track-name { flex: 1; }
+.track-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.track-artist {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+}
+.track-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
 
 @media (max-width: 600px) {
   .header { flex-direction: column; gap: 16px; }
@@ -142,7 +196,7 @@ tpl.innerHTML = `
 
 <button class="back">
   <svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>
-  Library
+  <span id="back-label">Albums</span>
 </button>
 
 <div class="header">
@@ -154,10 +208,16 @@ tpl.innerHTML = `
     <h2 id="title"></h2>
     <div class="artist" id="artist"></div>
     <div class="meta" id="meta"></div>
-    <button class="play-all" id="play-all">
-      <svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-      Play album
-    </button>
+    <div class="actions">
+      <button class="play-all" id="play-all">
+        <svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        Play album
+      </button>
+      <button class="save-btn" id="save-btn" hidden>
+        <svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+        Save
+      </button>
+    </div>
   </div>
 </div>
 
@@ -178,7 +238,23 @@ class AlbumDetail extends HTMLElement {
     });
 
     this.shadowRoot.getElementById('play-all').addEventListener('click', () => {
-      if (this._album) this._emitPlay(0);
+      if (this._album || this._playlist) this._emitPlay(0);
+    });
+
+    this.shadowRoot.getElementById('save-btn').addEventListener('click', () => {
+      if (!this._playlist) return;
+      const now = new Date();
+      const defaultName = `${this._playlist.label} \u2014 ${now.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+      const name = prompt('Playlist name:', defaultName);
+      if (!name) return;
+      this.dispatchEvent(new CustomEvent('save-playlist', {
+        bubbles: true, composed: true,
+        detail: {
+          name,
+          zone: this._playlist.zoneId || '',
+          tracks: this._playlist.tracks.map(t => t.key),
+        },
+      }));
     });
 
     this.shadowRoot.getElementById('tracks').addEventListener('click', (e) => {
@@ -187,9 +263,20 @@ class AlbumDetail extends HTMLElement {
     });
   }
 
+  set backLabel(label) {
+    this.shadowRoot.getElementById('back-label').textContent = label;
+  }
+
+  set saved(v) {
+    this.shadowRoot.getElementById('save-btn').hidden = !!v;
+  }
+
   set album(a) {
     this._album = a;
+    this._playlist = null;
     if (!a) return;
+
+    this.shadowRoot.getElementById('save-btn').hidden = true;
 
     const cover = this.shadowRoot.getElementById('cover');
     const coverPh = this.shadowRoot.getElementById('cover-ph');
@@ -211,13 +298,53 @@ class AlbumDetail extends HTMLElement {
     parts.push(`${a.trackCount} tracks`);
     this.shadowRoot.getElementById('meta').textContent = parts.join(' \u2022 ');
 
+    this.shadowRoot.getElementById('play-all').innerHTML =
+      '<svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg> Play album';
+
     this._renderTracks();
+  }
+
+  set playlist(p) {
+    this._playlist = p;
+    this._album = null;
+    if (!p) return;
+
+    this.shadowRoot.getElementById('save-btn').hidden = !!p.saved;
+
+    const cover = this.shadowRoot.getElementById('cover');
+    const coverPh = this.shadowRoot.getElementById('cover-ph');
+    cover.hidden = true;
+    coverPh.hidden = false;
+
+    this.shadowRoot.getElementById('title').textContent = p.label;
+    this.shadowRoot.getElementById('artist').textContent = p.desc;
+    this.shadowRoot.getElementById('meta').textContent = `${p.tracks.length} tracks`;
+
+    this.shadowRoot.getElementById('play-all').innerHTML =
+      '<svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg> Play all';
+
+    this._renderPlaylistTracks();
   }
 
   highlightTrack(index) {
     this.shadowRoot.querySelectorAll('.track').forEach(li => {
       li.setAttribute('aria-current', li.dataset.index === String(index) ? 'true' : 'false');
     });
+  }
+
+  highlightByUrl(url) {
+    if (!url) { this.highlightTrack(-1); return; }
+    const decoded = decodeURIComponent(url);
+    const tracks = this._playlist ? this._playlist.tracks : null;
+    const albumTracks = this._album ? this._album.tracks : null;
+
+    if (tracks) {
+      const idx = tracks.findIndex(t => decoded.includes(t.file));
+      this.highlightTrack(idx);
+    } else if (albumTracks) {
+      const idx = albumTracks.findIndex(f => decoded.includes(f));
+      this.highlightTrack(idx);
+    }
   }
 
   _renderTracks() {
@@ -247,17 +374,55 @@ class AlbumDetail extends HTMLElement {
     });
   }
 
+  _renderPlaylistTracks() {
+    const list = this.shadowRoot.getElementById('tracks');
+    list.innerHTML = '';
+    if (!this._playlist) return;
+
+    this._playlist.tracks.forEach((track, i) => {
+      const li = document.createElement('li');
+      li.className = 'track';
+      li.dataset.index = i;
+
+      const numSpan = document.createElement('span');
+      numSpan.className = 'track-num';
+      numSpan.textContent = String(i + 1).padStart(2, '0');
+
+      const info = document.createElement('div');
+      info.className = 'track-info';
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'track-name';
+      nameSpan.textContent = track.title;
+
+      const artistSpan = document.createElement('span');
+      artistSpan.className = 'track-artist';
+      artistSpan.textContent = track.artist;
+
+      info.append(nameSpan, artistSpan);
+      li.append(numSpan, info);
+      list.appendChild(li);
+    });
+  }
+
   _emitPlay(index) {
-    this.dispatchEvent(new CustomEvent('track-play', {
-      bubbles: true, composed: true,
-      detail: {
-        artist: this._album.artist,
-        album: this._album.album,
-        cover: this._album.cover,
-        tracks: this._album.tracks,
-        index,
-      },
-    }));
+    if (this._playlist) {
+      this.dispatchEvent(new CustomEvent('playlist-play', {
+        bubbles: true, composed: true,
+        detail: { tracks: this._playlist.tracks, index },
+      }));
+    } else if (this._album) {
+      this.dispatchEvent(new CustomEvent('track-play', {
+        bubbles: true, composed: true,
+        detail: {
+          artist: this._album.artist,
+          album: this._album.album,
+          cover: this._album.cover,
+          tracks: this._album.tracks,
+          index,
+        },
+      }));
+    }
   }
 }
 

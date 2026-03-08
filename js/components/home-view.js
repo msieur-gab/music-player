@@ -1,4 +1,5 @@
 import { getRecentlyPlayed, getMostPlayed, getMostPlayedArtists } from '../services/stats.js';
+import { fetchZones } from '../services/api.js';
 
 const noteSvg = `<svg viewBox="0 0 24 24" style="width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;opacity:0.4"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>`;
 
@@ -198,6 +199,40 @@ tpl.innerHTML = `
   background: var(--accent);
 }
 
+/* ── Zone tags ── */
+.zone-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.zone-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--bg-raised);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+.zone-tag:hover {
+  border-color: var(--accent);
+  background: var(--accent-light);
+  color: var(--accent);
+}
+.zone-tag .count {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-weight: 400;
+}
+.zone-tag:hover .count { color: var(--accent); opacity: 0.7; }
+
 /* ── Empty state ── */
 .empty {
   text-align: center;
@@ -248,15 +283,49 @@ class HomeView extends HTMLElement {
   async refresh() {
     this._renderGreeting();
 
-    const [recent, top, artists] = await Promise.all([
+    const [recent, top, artists, zones] = await Promise.all([
       getRecentlyPlayed(8),
       getMostPlayed(8),
       getMostPlayedArtists(6),
+      fetchZones().catch(() => []),
     ]);
 
     const content = this.shadowRoot.getElementById('content');
+    let html = '';
 
-    if (!recent.length && !top.length) {
+    // Zone tags — split by group
+    const activities = zones.filter(z => z.group === 'activity' && z.trackCount > 0);
+    const moods = zones.filter(z => z.group === 'mood' && z.trackCount > 0);
+    const support = zones.filter(z => z.group === 'support' && z.trackCount > 0);
+
+    if (activities.length) {
+      html += `<div class="section">
+        <div class="section-label">What are you up to?</div>
+        <div class="zone-row">${activities.map(z =>
+          `<button class="zone-tag" data-zone="${z.id}">${z.label} <span class="count">${z.trackCount}</span></button>`
+        ).join('')}</div>
+      </div>`;
+    }
+
+    if (moods.length) {
+      html += `<div class="section">
+        <div class="section-label">How do you feel?</div>
+        <div class="zone-row">${moods.map(z =>
+          `<button class="zone-tag" data-zone="${z.id}">${z.label} <span class="count">${z.trackCount}</span></button>`
+        ).join('')}</div>
+      </div>`;
+    }
+
+    if (support.length) {
+      html += `<div class="section">
+        <div class="section-label">What do you need?</div>
+        <div class="zone-row">${support.map(z =>
+          `<button class="zone-tag" data-zone="${z.id}">${z.label} <span class="count">${z.trackCount}</span></button>`
+        ).join('')}</div>
+      </div>`;
+    }
+
+    if (!recent.length && !top.length && !activities.length && !moods.length && !support.length) {
       content.innerHTML = `
         <div class="empty">
           <svg class="empty-icon" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
@@ -265,8 +334,6 @@ class HomeView extends HTMLElement {
         </div>`;
       return;
     }
-
-    let html = '';
 
     if (recent.length) {
       html += `<div class="section">
@@ -306,6 +373,15 @@ class HomeView extends HTMLElement {
         this.dispatchEvent(new CustomEvent('navigate-artist', {
           bubbles: true, composed: true,
           detail: { artist: card.dataset.artist },
+        }));
+      });
+    });
+
+    content.querySelectorAll('[data-zone]').forEach(tag => {
+      tag.addEventListener('click', () => {
+        this.dispatchEvent(new CustomEvent('open-zone', {
+          bubbles: true, composed: true,
+          detail: { zone: tag.dataset.zone },
         }));
       });
     });
