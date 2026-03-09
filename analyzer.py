@@ -327,17 +327,31 @@ def generate_playlist(zone_id, music_root, limit=25, artist=None, album=None):
     ranges = get_norm_ranges(conn)
     conn.close()
 
-    # Filter and sort by zone score
-    candidates = []
+    # Collect all scores, then set threshold relative to top score.
+    # Only include tracks within 75% of the best score for this zone,
+    # so weak zones get shorter playlists instead of padding with poor fits.
+    raw_candidates = []
     for row, scores in scored:
         if artist and row["artist"] != artist:
             continue
         if album and row["album"] != album:
             continue
         zone_score = scores.get(zone_id, 0)
-        if zone_score < 0.4:
-            continue
         feats = {f: row[f] for f in FEATURE_COLS}
+        raw_candidates.append((zone_score, row, feats))
+
+    if not raw_candidates:
+        return []
+
+    best_score = max(s for s, _, _ in raw_candidates)
+    # Tracks must score at least 0.50 (absolute) AND be within top 85% of best.
+    # This means weak zones (where best < 0.59) naturally get fewer tracks.
+    threshold = max(0.50, best_score * 0.85)
+
+    candidates = []
+    for zone_score, row, feats in raw_candidates:
+        if zone_score < threshold:
+            continue
         candidates.append({
             "score": zone_score,
             "key": row["track_id"],

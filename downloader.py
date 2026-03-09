@@ -2,7 +2,7 @@
 """
 YouTube Music playlist downloader.
 Self-bootstrapping: installs yt-dlp and ffmpeg if missing.
-Downloads as 192kbps CBR MP3 with clean ID3 tags + cover art.
+Downloads as native m4a (AAC) with MP4 tags + cover art.
 """
 
 import subprocess
@@ -11,7 +11,6 @@ import shutil
 import os
 import json
 import re
-import struct
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -125,57 +124,41 @@ def _sanitise(name):
 # ---------------------------------------------------------------------------
 
 def _write_tags(filepath, meta):
-    """Write clean ID3v2.4 tags with embedded cover art."""
-    from mutagen.mp3 import MP3
-    from mutagen.id3 import (
-        ID3, TIT2, TPE1, TPE2, TALB, TRCK, TCON, TDRC, APIC, ID3NoHeaderError
-    )
+    """Write MP4 tags with embedded cover art."""
+    from mutagen.mp4 import MP4, MP4Cover
 
     try:
-        audio = MP3(filepath)
+        audio = MP4(filepath)
     except Exception:
         return
 
-    # Start fresh – remove existing tags and write clean ones
-    try:
-        audio.delete()
-        audio.save()
-    except Exception:
-        pass
-
-    try:
-        tags = ID3(filepath)
-    except ID3NoHeaderError:
-        tags = ID3()
-
-    tags.update_to_v24()
+    audio.tags = audio.tags or {}
 
     if meta.get("title"):
-        tags.add(TIT2(encoding=3, text=[meta["title"]]))
+        audio.tags["\xa9nam"] = [meta["title"]]
     if meta.get("artist"):
-        tags.add(TPE1(encoding=3, text=[meta["artist"]]))
+        audio.tags["\xa9ART"] = [meta["artist"]]
     if meta.get("album_artist"):
-        tags.add(TPE2(encoding=3, text=[meta["album_artist"]]))
+        audio.tags["aART"] = [meta["album_artist"]]
     if meta.get("album"):
-        tags.add(TALB(encoding=3, text=[meta["album"]]))
+        audio.tags["\xa9alb"] = [meta["album"]]
     if meta.get("track_number"):
-        total = meta.get("track_total", "")
-        trck = f"{meta['track_number']}/{total}" if total else str(meta["track_number"])
-        tags.add(TRCK(encoding=3, text=[trck]))
+        total = meta.get("track_total", 0)
+        audio.tags["trkn"] = [(int(meta["track_number"]), int(total) if total else 0)]
     if meta.get("genre"):
-        tags.add(TCON(encoding=3, text=[meta["genre"]]))
+        audio.tags["\xa9gen"] = [meta["genre"]]
     if meta.get("release_year"):
-        tags.add(TDRC(encoding=3, text=[str(meta["release_year"])]))
+        audio.tags["\xa9day"] = [str(meta["release_year"])]
 
     # Embed cover art
     cover_path = meta.get("cover_path")
     if cover_path and os.path.isfile(cover_path):
         with open(cover_path, "rb") as f:
             cover_data = f.read()
-        mime = "image/jpeg" if cover_path.endswith(".jpg") else "image/png"
-        tags.add(APIC(encoding=3, mime=mime, type=3, desc="Front Cover", data=cover_data))
+        fmt = MP4Cover.FORMAT_JPEG if cover_path.endswith(".jpg") else MP4Cover.FORMAT_PNG
+        audio.tags["covr"] = [MP4Cover(cover_data, imageformat=fmt)]
 
-    tags.save(filepath, v2_version=4)
+    audio.save()
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +293,7 @@ def download_playlist(url, music_root=None, on_progress=None):
         track_title = re.sub(r'\s*\[Official Video\]', '', track_title, flags=re.IGNORECASE)
 
         safe_title = _sanitise(track_title)
-        filename = f"{track_num} - {safe_title}.mp3"
+        filename = f"{track_num} - {safe_title}.m4a"
         filepath = os.path.join(album_dir, filename)
 
         if os.path.isfile(filepath):
@@ -332,14 +315,13 @@ def download_playlist(url, music_root=None, on_progress=None):
         temp_path = os.path.join(album_dir, f"_temp_{track_num}")
 
         dl_opts = {
-            "format": "bestaudio/best",
+            "format": "bestaudio[ext=m4a]/bestaudio/best",
             "outtmpl": temp_path + ".%(ext)s",
             "postprocessors": [{
                 "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
+                "preferredcodec": "m4a",
+                "preferredquality": "256",
             }],
-            "postprocessor_args": ["-ar", "44100", "-ac", "2", "-b:a", "192k", "-cbr", "true"],
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
@@ -349,12 +331,12 @@ def download_playlist(url, music_root=None, on_progress=None):
             with yt_dlp.YoutubeDL(dl_opts) as ydl:
                 ydl.download([track_url])
 
-            temp_mp3 = temp_path + ".mp3"
-            if os.path.isfile(temp_mp3):
-                os.rename(temp_mp3, filepath)
+            temp_m4a = temp_path + ".m4a"
+            if os.path.isfile(temp_m4a):
+                os.rename(temp_m4a, filepath)
             else:
                 for f in os.listdir(album_dir):
-                    if f.startswith(f"_temp_{track_num}") and f.endswith(".mp3"):
+                    if f.startswith(f"_temp_{track_num}") and f.endswith(".m4a"):
                         os.rename(os.path.join(album_dir, f), filepath)
                         break
 
