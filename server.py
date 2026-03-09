@@ -38,12 +38,11 @@ if _missing:
 
 from downloader import bootstrap, download_playlist
 from cast_manager import CastManager
-from db import _connect
-from analyzer import (
-    analyze_library, find_similar, get_zones, generate_playlist,
+from soniq import (
+    _connect, analyze_library, find_similar, get_zones, generate_playlist,
     migrate_from_json, find_by_harmony, get_mood_clusters, find_transitions,
+    save_playlist, list_playlists, get_playlist, delete_playlist,
 )
-from playlist_manager import save_playlist, list_playlists, get_playlist, delete_playlist
 
 PORT = 8000
 ROOT = os.path.dirname(os.path.abspath(__file__))

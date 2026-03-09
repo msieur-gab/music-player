@@ -1,8 +1,7 @@
-#!/usr/bin/env python3
-"""Database management for MusiCast — SQLite schema, connection, track storage.
+"""Database management — SQLite schema, connection, track storage.
 
 Tracks table stores objective audio features only. Classification scores
-are computed on demand by the analyzer — never stored.
+are computed on demand by the scoring module -- never stored.
 """
 
 import sqlite3
@@ -10,7 +9,7 @@ import json
 import os
 
 DB_FILE = ".audio_features.db"
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # Numeric feature columns in tracks table
 FEATURE_COLS = [
@@ -29,8 +28,8 @@ PROFILE_FEATURES = [
 
 
 def _db_path(music_root):
-    """DB lives locally (not on 9p mount — WAL locking fails there)."""
-    local_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".data")
+    """DB lives locally (not on 9p mount -- WAL locking fails there)."""
+    local_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".data")
     os.makedirs(local_dir, exist_ok=True)
     return os.path.join(local_dir, DB_FILE)
 
@@ -48,7 +47,7 @@ def _connect(music_root):
 
 
 def _ensure_schema(conn):
-    """Create tables if they don't exist."""
+    """Create or migrate tables to current schema version."""
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     if version >= SCHEMA_VERSION:
         return
@@ -91,6 +90,12 @@ def _ensure_schema(conn):
         CREATE INDEX IF NOT EXISTS idx_artist ON tracks(artist);
         CREATE INDEX IF NOT EXISTS idx_album ON tracks(artist, album);
     """)
+
+    # Migrate: add columns that may be missing from older schemas
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(tracks)").fetchall()}
+    for col in ("chroma_mean_json", "tonnetz_mean_json"):
+        if col not in existing:
+            conn.execute(f"ALTER TABLE tracks ADD COLUMN {col} TEXT DEFAULT '[]'")
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()

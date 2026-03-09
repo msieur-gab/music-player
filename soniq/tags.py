@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""Soniq audio feature tags — read/write feature signatures in m4a and mp3 files.
+"""Soniq audio feature tags -- read/write feature signatures in m4a and mp3 files.
 
 Stores extracted audio features directly in the file's metadata as JSON,
 making the library fully portable. On startup, features can be loaded from
@@ -15,8 +14,8 @@ Schema v0.2:
   }
 
 Storage:
-  m4a → custom MP4 atom: ----:com.soniq:features
-  mp3 → ID3 TXXX frame:  com.soniq:features
+  m4a -> custom MP4 atom: ----:com.soniq:features
+  mp3 -> ID3 TXXX frame:  com.soniq:features
 """
 
 import json
@@ -29,7 +28,6 @@ CURRENT_VERSION = "0.2"
 TAG_DESC = "com.soniq:features"
 MP4_ATOM = "----:com.soniq:features"
 
-# Scalar feature keys (must match extractor output)
 SCALAR_KEYS = [
     "duration", "tempo", "key", "mode",
     "rms_mean", "rms_max", "rms_variance", "dynamic_range",
@@ -37,7 +35,6 @@ SCALAR_KEYS = [
     "onset_strength", "beat_strength", "vocal_proxy", "zcr_mean",
 ]
 
-# Short keys for compact JSON storage
 SCALAR_SHORT = {
     "duration": "duration", "tempo": "tempo", "key": "key", "mode": "mode",
     "rms_mean": "rms_mean", "rms_max": "rms_max", "rms_variance": "rms_var",
@@ -47,12 +44,10 @@ SCALAR_SHORT = {
     "vocal_proxy": "vocal", "zcr_mean": "zcr",
 }
 
-# Reverse: short → full
 SCALAR_FULL = {v: k for k, v in SCALAR_SHORT.items()}
 
 
 def _round(val, decimals=4):
-    """Round a float for compact storage."""
     if isinstance(val, (int, float)):
         return round(val, decimals)
     return val
@@ -102,13 +97,11 @@ def tag_to_features(tag_json):
 
     features = {}
 
-    # Scalars
     s = tag.get("s", {})
     for short_key, val in s.items():
         full_key = SCALAR_FULL.get(short_key, short_key)
         features[full_key] = val
 
-    # Vectors
     vec = tag.get("vec", {})
     if "mfcc_m" in vec:
         features["mfcc_mean"] = vec["mfcc_m"]
@@ -211,7 +204,6 @@ def _write_mp3(filepath, tag_json):
     except ID3NoHeaderError:
         audio = ID3()
 
-    # Remove existing tag if present
     for key in list(audio.keys()):
         if key.startswith("TXXX:") and TAG_DESC in key:
             del audio[key]
