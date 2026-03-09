@@ -445,10 +445,10 @@ def find_similar(track_id, music_root, limit=10):
       - 13 MFCC means (timbral identity) — z-score normalized across library
       - 13 MFCC stds (timbral consistency) — z-score normalized
       - 7 spectral contrast bands (harmonic structure) — z-score normalized
+      - 12 chroma (pitch class energy — harmonic fingerprint) — z-score normalized
+      - 6 tonnetz (tonal centroids — harmonic relationships) — z-score normalized
 
-    All components are normalized to comparable scales so no single group
-    dominates the distance calculation.
-
+    Total: 61 dimensions. All components normalized to comparable scales.
     Scored via inverse Euclidean distance for better separation than cosine.
     """
     import json as _json
@@ -465,18 +465,19 @@ def find_similar(track_id, music_root, limit=10):
     all_rows = conn.execute("SELECT * FROM tracks").fetchall()
     conn.close()
 
-    # Compute library-wide mean/std for MFCC, MFCC std, and contrast
+    # Compute library-wide mean/std for vector features
     # so we can z-score normalize them to the same scale as profile features
-    all_mfcc = []
-    all_mfcc_s = []
-    all_contrast = []
+    vec_collectors = {
+        "mfcc_mean_json": ([], 13),
+        "mfcc_std_json": ([], 13),
+        "contrast_mean_json": ([], 7),
+        "chroma_mean_json": ([], 12),
+        "tonnetz_mean_json": ([], 6),
+    }
     for row in all_rows:
-        m = _json.loads(row["mfcc_mean_json"]) if isinstance(row["mfcc_mean_json"], str) else row["mfcc_mean_json"]
-        s = _json.loads(row["mfcc_std_json"]) if isinstance(row["mfcc_std_json"], str) else row["mfcc_std_json"]
-        c = _json.loads(row["contrast_mean_json"]) if isinstance(row["contrast_mean_json"], str) else row["contrast_mean_json"]
-        if m: all_mfcc.append(m)
-        if s: all_mfcc_s.append(s)
-        if c: all_contrast.append(c)
+        for col, (collector, _) in vec_collectors.items():
+            v = _json.loads(row[col]) if isinstance(row[col], str) else row[col]
+            if v: collector.append(v)
 
     def _stats(arrays, dims):
         """Compute per-dimension mean and std."""
@@ -487,35 +488,27 @@ def find_similar(track_id, music_root, limit=10):
                 for i in range(dims)]
         return means, stds
 
-    mfcc_mean, mfcc_std = _stats(all_mfcc, 13)
-    mfccs_mean, mfccs_std = _stats(all_mfcc_s, 13)
-    cont_mean, cont_std = _stats(all_contrast, 7)
+    vec_stats = {}
+    for col, (collector, dims) in vec_collectors.items():
+        vec_stats[col] = _stats(collector, dims)
 
     def _full_vec(row):
-        """Build normalized similarity vector — all components on 0-1 scale."""
+        """Build normalized similarity vector — all components on comparable scale."""
         vec = []
 
-        # Profile features (already min-max normalized)
+        # Profile features (min-max normalized)
         for f in PROFILE_FEATURES:
             r = ranges.get(f, [0, 0])
             lo, hi = r[0], r[1]
             val = row[f] if row[f] is not None else 0
             vec.append((val - lo) / (hi - lo) if hi > lo else 0.5)
 
-        # MFCC mean — z-score normalized
-        m = _json.loads(row["mfcc_mean_json"]) if isinstance(row["mfcc_mean_json"], str) else row["mfcc_mean_json"]
-        m = m or [0] * 13
-        vec.extend((m[i] - mfcc_mean[i]) / mfcc_std[i] for i in range(13))
-
-        # MFCC std — z-score normalized
-        s = _json.loads(row["mfcc_std_json"]) if isinstance(row["mfcc_std_json"], str) else row["mfcc_std_json"]
-        s = s or [0] * 13
-        vec.extend((s[i] - mfccs_mean[i]) / mfccs_std[i] for i in range(13))
-
-        # Spectral contrast — z-score normalized
-        c = _json.loads(row["contrast_mean_json"]) if isinstance(row["contrast_mean_json"], str) else row["contrast_mean_json"]
-        c = c or [0] * 7
-        vec.extend((c[i] - cont_mean[i]) / cont_std[i] for i in range(7))
+        # Vector features — all z-score normalized
+        for col, (_, dims) in vec_collectors.items():
+            v = _json.loads(row[col]) if isinstance(row[col], str) else row[col]
+            v = v or [0] * dims
+            means, stds = vec_stats[col]
+            vec.extend((v[i] - means[i]) / stds[i] for i in range(dims))
 
         return vec
 
@@ -534,6 +527,312 @@ def find_similar(track_id, music_root, limit=10):
             "file": row["file"],
             "url": f"/music/{row['file']}",
             "score": round(score, 4),
+        })
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return results[:limit]
+
+
+# ---------------------------------------------------------------------------
+# Key / Harmony search
+# ---------------------------------------------------------------------------
+
+# Circle of fifths: each key's harmonically compatible neighbors
+# key 0=C, 1=C#, ... 11=B
+_KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+def _compatible_keys(key, mode):
+    """Return set of (key, mode) tuples that are harmonically compatible.
+
+    Includes: same key, relative major/minor, circle-of-fifths neighbors (±1),
+    and parallel major/minor.
+    """
+    compat = {(key, mode)}
+
+    # Relative major/minor (3 semitones apart)
+    if mode == 1:  # major → relative minor is 9 semitones up (or 3 down)
+        compat.add(((key + 9) % 12, 0))
+    else:  # minor → relative major is 3 semitones up
+        compat.add(((key + 3) % 12, 1))
+
+    # Parallel major/minor (same root, different mode)
+    compat.add((key, 1 - mode))
+
+    # Circle of fifths neighbors (±7 semitones = ±1 on circle)
+    for offset in (7, -7):
+        neighbor = (key + offset) % 12
+        compat.add((neighbor, mode))
+        # And their relative
+        if mode == 1:
+            compat.add(((neighbor + 9) % 12, 0))
+        else:
+            compat.add(((neighbor + 3) % 12, 1))
+
+    return compat
+
+
+def find_by_harmony(track_id, music_root, limit=20):
+    """Find tracks harmonically compatible with the given track.
+
+    Uses key/mode for filtering, then ranks by chroma vector similarity
+    (how close the actual pitch-class distributions are).
+    """
+    import json as _json
+
+    conn = _connect(music_root)
+    target = conn.execute(
+        "SELECT * FROM tracks WHERE track_id = ?", (track_id,)
+    ).fetchone()
+    if not target:
+        conn.close()
+        return []
+
+    t_key, t_mode = int(target["key"]), int(target["mode"])
+    compat = _compatible_keys(t_key, t_mode)
+
+    all_rows = conn.execute("SELECT * FROM tracks").fetchall()
+    conn.close()
+
+    t_chroma = _json.loads(target["chroma_mean_json"]) if target["chroma_mean_json"] else []
+
+    results = []
+    for row in all_rows:
+        if row["track_id"] == track_id:
+            continue
+        r_key, r_mode = int(row["key"]), int(row["mode"])
+
+        # Filter: must be in a compatible key
+        if (r_key, r_mode) not in compat:
+            continue
+
+        # Rank by chroma similarity (cosine on pitch-class vectors)
+        r_chroma = _json.loads(row["chroma_mean_json"]) if row["chroma_mean_json"] else []
+        chroma_sim = _cosine(t_chroma, r_chroma) if t_chroma and r_chroma else 0.5
+
+        # Bonus for exact same key+mode
+        key_bonus = 0.1 if (r_key, r_mode) == (t_key, t_mode) else 0.0
+
+        results.append({
+            "key": row["track_id"],
+            "artist": row["artist"],
+            "album": row["album"],
+            "title": row["title"],
+            "file": row["file"],
+            "url": f"/music/{row['file']}",
+            "musicalKey": f"{_KEY_NAMES[r_key]} {'major' if r_mode else 'minor'}",
+            "score": round(chroma_sim + key_bonus, 4),
+        })
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return results[:limit]
+
+
+# ---------------------------------------------------------------------------
+# Mood clustering (Russell's circumplex: arousal × valence)
+# ---------------------------------------------------------------------------
+
+def get_mood_clusters(music_root):
+    """Cluster all tracks into mood quadrants using audio features.
+
+    Arousal: tempo, onset_strength, rms_mean, spectral_flux
+    Valence: estimated from tonnetz consonance, chroma major-key correlation,
+             spectral centroid (brightness ≈ positivity)
+
+    Returns 4 quadrants:
+      - high_positive: excited, happy, euphoric
+      - high_negative: tense, aggressive, anxious
+      - low_positive: peaceful, serene, content
+      - low_negative: sad, melancholic, dark
+    """
+    import json as _json
+
+    conn = _connect(music_root)
+    ranges = get_norm_ranges(conn)
+    rows = conn.execute(
+        "SELECT track_id, artist, album, title, file, "
+        + ", ".join(FEATURE_COLS)
+        + ", chroma_mean_json, tonnetz_mean_json FROM tracks"
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        return {"high_positive": [], "high_negative": [],
+                "low_positive": [], "low_negative": []}
+
+    def _norm(val, feat):
+        r = ranges.get(feat, [0, 0])
+        lo, hi = r[0], r[1]
+        return (val - lo) / (hi - lo) if hi > lo else 0.5
+
+    # Major key chroma template (normalized Krumhansl weights)
+    major_template = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09,
+                      2.52, 5.19, 2.39, 3.66, 2.29, 2.88]
+    mt_norm = sum(v**2 for v in major_template) ** 0.5
+
+    clusters = {"high_positive": [], "high_negative": [],
+                "low_positive": [], "low_negative": []}
+
+    for row in rows:
+        # Arousal: high tempo + loud + rhythmic + busy
+        arousal = (
+            _norm(row["tempo"], "tempo") * 0.3
+            + _norm(row["rms_mean"], "rms_mean") * 0.25
+            + _norm(row["onset_strength"], "onset_strength") * 0.25
+            + _norm(row["spectral_flux"], "spectral_flux") * 0.2
+        )
+
+        # Valence estimation from multiple cues:
+        # 1. Brightness (centroid) — brighter ≈ more positive
+        brightness = _norm(row["centroid_mean"], "centroid_mean")
+
+        # 2. Major-key correlation from chroma
+        chroma = _json.loads(row["chroma_mean_json"]) if row["chroma_mean_json"] else []
+        if chroma and len(chroma) == 12:
+            # Correlate with major template at detected key
+            key_idx = int(row["key"])
+            rotated = chroma[key_idx:] + chroma[:key_idx]
+            dot = sum(a * b for a, b in zip(rotated, major_template))
+            c_norm = sum(v**2 for v in rotated) ** 0.5
+            major_corr = dot / (c_norm * mt_norm) if c_norm > 0 else 0.5
+        else:
+            major_corr = 0.5
+
+        # 3. Tonnetz consonance — higher fifths/thirds energy = more consonant = positive
+        tonnetz = _json.loads(row["tonnetz_mean_json"]) if row["tonnetz_mean_json"] else []
+        if tonnetz and len(tonnetz) == 6:
+            # dims 0-1: fifths, 2-3: minor thirds, 4-5: major thirds
+            # More energy in fifths+major thirds = consonant
+            consonance = (abs(tonnetz[0]) + abs(tonnetz[1])
+                         + abs(tonnetz[4]) + abs(tonnetz[5])) / 4.0
+            # Normalize roughly to 0-1 (tonnetz values typically -0.1 to 0.1)
+            consonance = min(1.0, consonance * 5)
+        else:
+            consonance = 0.5
+
+        valence = brightness * 0.3 + major_corr * 0.4 + consonance * 0.3
+
+        # Classify into quadrant
+        if arousal >= 0.5:
+            quadrant = "high_positive" if valence >= 0.5 else "high_negative"
+        else:
+            quadrant = "low_positive" if valence >= 0.5 else "low_negative"
+
+        track = {
+            "key": row["track_id"],
+            "artist": row["artist"],
+            "album": row["album"],
+            "title": row["title"],
+            "file": row["file"],
+            "url": f"/music/{row['file']}",
+            "arousal": round(arousal, 4),
+            "valence": round(valence, 4),
+        }
+        clusters[quadrant].append(track)
+
+    # Sort each quadrant by distance from center (most extreme first)
+    for q in clusters:
+        clusters[q].sort(
+            key=lambda t: (t["arousal"] - 0.5)**2 + (t["valence"] - 0.5)**2,
+            reverse=True,
+        )
+
+    return clusters
+
+
+# ---------------------------------------------------------------------------
+# Transition suggestions (DJ-style smooth transitions)
+# ---------------------------------------------------------------------------
+
+def find_transitions(track_id, music_root, limit=10):
+    """Find tracks that would transition smoothly from the given track.
+
+    A good transition has:
+      - Similar tempo (±10% is ideal for beatmatching)
+      - Compatible key (circle of fifths)
+      - Similar energy level (no jarring volume jumps)
+      - Close chroma profile (harmonic compatibility)
+
+    Returns tracks ranked by transition score.
+    """
+    import json as _json
+
+    conn = _connect(music_root)
+    target = conn.execute(
+        "SELECT * FROM tracks WHERE track_id = ?", (track_id,)
+    ).fetchone()
+    if not target:
+        conn.close()
+        return []
+
+    all_rows = conn.execute("SELECT * FROM tracks").fetchall()
+    ranges = get_norm_ranges(conn)
+    conn.close()
+
+    t_key, t_mode = int(target["key"]), int(target["mode"])
+    t_tempo = target["tempo"]
+    t_rms = target["rms_mean"]
+    t_chroma = _json.loads(target["chroma_mean_json"]) if target["chroma_mean_json"] else []
+    t_centroid = target["centroid_mean"]
+
+    compat = _compatible_keys(t_key, t_mode)
+
+    results = []
+    for row in all_rows:
+        if row["track_id"] == track_id:
+            continue
+
+        # Tempo compatibility: 1.0 when identical, drops off outside ±10%
+        if t_tempo > 0 and row["tempo"] > 0:
+            tempo_ratio = row["tempo"] / t_tempo
+            # Also consider half/double time
+            ratios = [tempo_ratio, tempo_ratio * 2, tempo_ratio / 2]
+            tempo_score = max(max(0, 1.0 - abs(r - 1.0) * 5) for r in ratios)
+        else:
+            tempo_score = 0.5
+
+        # Key compatibility: 1.0 if compatible, 0.3 if not
+        r_key, r_mode = int(row["key"]), int(row["mode"])
+        key_score = 1.0 if (r_key, r_mode) in compat else 0.3
+
+        # Energy continuity: penalize large RMS jumps
+        rms_diff = abs(row["rms_mean"] - t_rms)
+        # Typical RMS range is ~40dB; a 6dB jump is noticeable
+        energy_score = max(0, 1.0 - rms_diff / 12.0)
+
+        # Chroma similarity
+        r_chroma = _json.loads(row["chroma_mean_json"]) if row["chroma_mean_json"] else []
+        chroma_score = _cosine(t_chroma, r_chroma) if t_chroma and r_chroma else 0.5
+
+        # Brightness continuity
+        centroid_diff = abs(row["centroid_mean"] - t_centroid)
+        brightness_score = max(0, 1.0 - centroid_diff / 3000.0)
+
+        # Weighted combination
+        score = (
+            tempo_score * 0.30
+            + key_score * 0.25
+            + chroma_score * 0.20
+            + energy_score * 0.15
+            + brightness_score * 0.10
+        )
+
+        results.append({
+            "key": row["track_id"],
+            "artist": row["artist"],
+            "album": row["album"],
+            "title": row["title"],
+            "file": row["file"],
+            "url": f"/music/{row['file']}",
+            "musicalKey": f"{_KEY_NAMES[r_key]} {'major' if r_mode else 'minor'}",
+            "tempo": round(row["tempo"], 1),
+            "score": round(score, 4),
+            "details": {
+                "tempo": round(tempo_score, 3),
+                "key": round(key_score, 3),
+                "chroma": round(chroma_score, 3),
+                "energy": round(energy_score, 3),
+                "brightness": round(brightness_score, 3),
+            },
         })
 
     results.sort(key=lambda x: x["score"], reverse=True)

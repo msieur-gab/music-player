@@ -39,7 +39,10 @@ if _missing:
 from downloader import bootstrap, download_playlist
 from cast_manager import CastManager
 from db import _connect
-from analyzer import analyze_library, find_similar, get_zones, generate_playlist, migrate_from_json
+from analyzer import (
+    analyze_library, find_similar, get_zones, generate_playlist,
+    migrate_from_json, find_by_harmony, get_mood_clusters, find_transitions,
+)
 from playlist_manager import save_playlist, list_playlists, get_playlist, delete_playlist
 
 PORT = 8000
@@ -305,6 +308,24 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json({"error": "Missing key param"}, 400)
             else:
                 self._json(find_similar(key, MUSIC_ROOT, limit))
+        elif path == '/api/harmony':
+            qs = parse_qs(urlparse(self.path).query)
+            key = qs.get('key', [''])[0]
+            limit = int(qs.get('limit', ['20'])[0])
+            if not key:
+                self._json({"error": "Missing key param"}, 400)
+            else:
+                self._json(find_by_harmony(key, MUSIC_ROOT, limit))
+        elif path == '/api/moods':
+            self._json(get_mood_clusters(MUSIC_ROOT))
+        elif path == '/api/transitions':
+            qs = parse_qs(urlparse(self.path).query)
+            key = qs.get('key', [''])[0]
+            limit = int(qs.get('limit', ['10'])[0])
+            if not key:
+                self._json({"error": "Missing key param"}, 400)
+            else:
+                self._json(find_transitions(key, MUSIC_ROOT, limit))
         elif path == '/api/tracks':
             qs = parse_qs(urlparse(self.path).query)
             page = int(qs.get('page', ['1'])[0])
@@ -337,7 +358,8 @@ class Handler(SimpleHTTPRequestHandler):
             tracks_list = []
             for r in rows:
                 track = {k: r[k] for k in r.keys()}
-                for jcol in ('mfcc_mean_json', 'mfcc_std_json', 'contrast_mean_json'):
+                for jcol in ('mfcc_mean_json', 'mfcc_std_json', 'contrast_mean_json',
+                             'chroma_mean_json', 'tonnetz_mean_json'):
                     if jcol in track and isinstance(track[jcol], str):
                         track[jcol] = _json.loads(track[jcol])
                 tracks_list.append(track)

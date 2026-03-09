@@ -5,13 +5,13 @@ Stores extracted audio features directly in the file's metadata as JSON,
 making the library fully portable. On startup, features can be loaded from
 tags in seconds instead of re-running librosa (hours).
 
-Schema v0.1:
+Schema v0.2:
   {
     "src": "soniq",
-    "v": "0.1",
-    "at": "2026-03-09T11:45:21Z",
+    "v": "0.2",
+    "at": "2026-03-09T20:15:00Z",
     "s": { 15 scalar features },
-    "vec": { mfcc_m, mfcc_s, contrast }
+    "vec": { mfcc_m, mfcc_s, contrast, chroma, tonnetz }
   }
 
 Storage:
@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 
 log = logging.getLogger(__name__)
 
-CURRENT_VERSION = "0.1"
+CURRENT_VERSION = "0.2"
 TAG_DESC = "com.soniq:features"
 MP4_ATOM = "----:com.soniq:features"
 
@@ -78,6 +78,10 @@ def features_to_tag(features):
         tag["vec"]["mfcc_s"] = [_round(v) for v in features["mfcc_std"]]
     if "contrast_mean" in features:
         tag["vec"]["contrast"] = [_round(v) for v in features["contrast_mean"]]
+    if "chroma_mean" in features:
+        tag["vec"]["chroma"] = [_round(v) for v in features["chroma_mean"]]
+    if "tonnetz_mean" in features:
+        tag["vec"]["tonnetz"] = [_round(v) for v in features["tonnetz_mean"]]
 
     return json.dumps(tag, separators=(",", ":"))
 
@@ -112,6 +116,10 @@ def tag_to_features(tag_json):
         features["mfcc_std"] = vec["mfcc_s"]
     if "contrast" in vec:
         features["contrast_mean"] = vec["contrast"]
+    if "chroma" in vec:
+        features["chroma_mean"] = vec["chroma"]
+    if "tonnetz" in vec:
+        features["tonnetz_mean"] = vec["tonnetz"]
 
     return features, version
 

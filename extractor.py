@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Audio feature extraction using librosa with multi-point sampling.
 
-Per track — 14 scalar features + 4 vector features (45 dims total):
+Per track — 15 scalar features + 5 vector features (66 dims total):
   Scalars: duration, tempo, key, mode, rms_mean (dB), rms_max, rms_variance,
            dynamic_range, centroid_mean (Hz), flatness_mean, spectral_flux,
            onset_strength, beat_strength, vocal_proxy, zcr_mean
-  Vectors: mfcc_mean (13), mfcc_std (13), contrast_mean (7) — stored as JSON
+  Vectors: mfcc_mean (13), mfcc_std (13), contrast_mean (7),
+           chroma_mean (12), tonnetz_mean (6) — stored as JSON
 
 Multi-point sampling: 3 x 10s segments at 15%, 50%, 85% of track duration.
 Total audio analyzed per track: ~30s (vs full-track = faster, representative).
@@ -98,6 +99,14 @@ def extract_track_features(filepath):
     # Spectral contrast: average 7-band vectors across segments
     contrast_vecs = [np.array(f["contrast_mean"]) for f in seg_feats]
     result["contrast_mean"] = np.mean(contrast_vecs, axis=0).tolist()
+
+    # Chroma: average 12-pitch-class vectors across segments
+    chroma_vecs = [np.array(f["chroma_mean"]) for f in seg_feats]
+    result["chroma_mean"] = np.mean(chroma_vecs, axis=0).tolist()
+
+    # Tonnetz: average 6-dim tonal centroid vectors across segments
+    tonnetz_vecs = [np.array(f["tonnetz_mean"]) for f in seg_feats]
+    result["tonnetz_mean"] = np.mean(tonnetz_vecs, axis=0).tolist()
 
     # Tempo + key/mode from the loaded buffer (use up to 60s from middle)
     try:
@@ -198,6 +207,15 @@ def _segment_features(y, sr):
         contrast = librosa.feature.spectral_contrast(S=S, sr=sr)
         contrast_mean = np.mean(contrast, axis=1).tolist()
 
+        # Chroma (12 pitch classes — harmonic fingerprint)
+        chroma = librosa.feature.chroma_stft(S=S_power, sr=sr)
+        chroma_mean = np.mean(chroma, axis=1).tolist()
+
+        # Tonnetz (6 tonal centroid dims — harmonic relationships)
+        # Requires chroma, computed from it directly
+        tonnetz = librosa.feature.tonnetz(chroma=chroma)
+        tonnetz_mean = np.mean(tonnetz, axis=1).tolist()
+
         # Zero-crossing rate (time-domain, cheap)
         zcr_mean = float(np.mean(librosa.feature.zero_crossing_rate(y)[0]))
 
@@ -212,6 +230,8 @@ def _segment_features(y, sr):
             "mfcc_mean": mfcc_mean,
             "mfcc_std": mfcc_std,
             "contrast_mean": contrast_mean,
+            "chroma_mean": chroma_mean,
+            "tonnetz_mean": tonnetz_mean,
             "zcr_mean": zcr_mean,
             "_rms_db_frames": rms_db_frames,
         }

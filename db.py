@@ -10,7 +10,7 @@ import json
 import os
 
 DB_FILE = ".audio_features.db"
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # Numeric feature columns in tracks table
 FEATURE_COLS = [
@@ -66,7 +66,9 @@ def _ensure_schema(conn):
             {feat_sql},
             mfcc_mean_json TEXT DEFAULT '[]',
             mfcc_std_json TEXT DEFAULT '[]',
-            contrast_mean_json TEXT DEFAULT '[]'
+            contrast_mean_json TEXT DEFAULT '[]',
+            chroma_mean_json TEXT DEFAULT '[]',
+            tonnetz_mean_json TEXT DEFAULT '[]'
         );
         CREATE TABLE IF NOT EXISTS meta (
             key TEXT PRIMARY KEY,
@@ -109,6 +111,10 @@ def insert_track(conn, track_id, artist, album, title, file, features):
     vals.append(json.dumps(features.get("mfcc_std", [])))
     cols.append("contrast_mean_json")
     vals.append(json.dumps(features.get("contrast_mean", [])))
+    cols.append("chroma_mean_json")
+    vals.append(json.dumps(features.get("chroma_mean", [])))
+    cols.append("tonnetz_mean_json")
+    vals.append(json.dumps(features.get("tonnetz_mean", [])))
 
     placeholders = ", ".join("?" * len(cols))
     col_names = ", ".join(cols)
