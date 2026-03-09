@@ -195,6 +195,32 @@ tpl.innerHTML = `
   flex-shrink: 0;
 }
 
+.similar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px; height: 28px;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  margin-left: 8px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--transition), color var(--transition), background var(--transition);
+}
+.track:hover .similar-btn { opacity: 1; }
+.similar-btn:hover {
+  color: var(--accent);
+  background: var(--bg-hover);
+}
+.similar-btn svg {
+  width: 16px; height: 16px;
+  stroke: currentColor; fill: none;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+
 @media (max-width: 600px) {
   .header { flex-direction: column; gap: 16px; }
   .cover, .cover-ph { width: 140px; height: 140px; }
@@ -266,6 +292,22 @@ class AlbumDetail extends HTMLElement {
     });
 
     this.shadowRoot.getElementById('tracks').addEventListener('click', (e) => {
+      // "Find similar" button
+      if (e.target.closest('.similar-btn')) {
+        e.stopPropagation();
+        const li = e.target.closest('.track');
+        if (!li || !this._album) return;
+        const i = parseInt(li.dataset.index, 10);
+        const t = this._album.tracks[i];
+        const file = typeof t === 'string' ? t : t.file;
+        const match = file.match(/^\d+\s*-\s*(.+)\.\w+$/i);
+        const title = match ? match[1] : file;
+        this.dispatchEvent(new CustomEvent('find-similar', {
+          bubbles: true, composed: true,
+          detail: { artist: this._album.artist, album: this._album.album, title },
+        }));
+        return;
+      }
       const li = e.target.closest('.track');
       if (li) this._emitPlay(parseInt(li.dataset.index, 10));
     });
@@ -375,7 +417,7 @@ class AlbumDetail extends HTMLElement {
     this._album.tracks.forEach((t, i) => {
       const file = typeof t === 'string' ? t : t.file;
       const duration = typeof t === 'string' ? 0 : (t.duration || 0);
-      const match = file.match(/^(\d+)\s*-\s*(.+)\.mp3$/i);
+      const match = file.match(/^(\d+)\s*-\s*(.+)\.\w+$/i);
       const num = match ? match[1] : String(i + 1).padStart(2, '0');
       const name = match ? match[2] : file;
 
@@ -399,6 +441,12 @@ class AlbumDetail extends HTMLElement {
         durSpan.textContent = this._fmtDur(duration);
         li.append(durSpan);
       }
+
+      const simBtn = document.createElement('button');
+      simBtn.className = 'similar-btn';
+      simBtn.title = 'Find similar tracks';
+      simBtn.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>';
+      li.append(simBtn);
 
       list.appendChild(li);
     });

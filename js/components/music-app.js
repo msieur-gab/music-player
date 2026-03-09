@@ -1,4 +1,4 @@
-import { fetchLibrary, fetchDevices, fetchStatus, castTrack, controlPlayback, fetchPlaylist, fetchZones, fetchSavedPlaylist, savePlaylistApi, deleteSavedPlaylist } from '../services/api.js';
+import { fetchLibrary, fetchDevices, fetchStatus, castTrack, controlPlayback, fetchPlaylist, fetchZones, fetchSavedPlaylist, savePlaylistApi, deleteSavedPlaylist, fetchSimilar } from '../services/api.js';
 import { recordPlay } from '../services/stats.js';
 import './nav-rail.js';
 import './home-view.js';
@@ -226,6 +226,11 @@ class MusicApp extends HTMLElement {
       $('detail').saved = true;
     });
 
+    // ── Find similar ──
+    $('detail').addEventListener('find-similar', (e) => {
+      this._openSimilar(e.detail.artist, e.detail.album, e.detail.title);
+    });
+
     // ── Now-playing controls ──
     $('player').addEventListener('control', (e) => {
       this._handleControl(e.detail);
@@ -411,6 +416,33 @@ class MusicApp extends HTMLElement {
     }
   }
 
+  // ── Similar tracks ──
+
+  async _openSimilar(artist, album, title) {
+    try {
+      const tracks = await fetchSimilar(artist, album, title, 25);
+      if (!tracks.length) return;
+
+      // Add cover URLs for each track
+      for (const t of tracks) {
+        const a = this._albums.find(al => al.artist === t.artist && al.album === t.album);
+        if (a) t.cover = a.cover;
+      }
+
+      const detail = this.shadowRoot.getElementById('detail');
+      detail.playlist = {
+        label: `Similar to ${title}`,
+        desc: `${artist} — ${album}`,
+        tracks,
+        saved: false,
+      };
+      detail.backLabel = 'Albums';
+      this.setAttribute('detail-open', '');
+    } catch (e) {
+      console.error('Find similar failed:', e);
+    }
+  }
+
   // ── Playlist playback (zone playlists) ──
 
   _playPlaylist(tracks, index) {
@@ -441,7 +473,7 @@ class MusicApp extends HTMLElement {
   _play({ artist, album, cover, tracks, index }) {
     this._queue = tracks.map((t) => {
       const file = typeof t === 'string' ? t : t.file;
-      const match = file.match(/^\d+\s*-\s*(.+)\.mp3$/i);
+      const match = file.match(/^\d+\s*-\s*(.+)\.\w+$/i);
       const title = match ? match[1] : file;
       return {
         url: `/music/${encodeURIComponent(artist)}/${encodeURIComponent(album)}/${encodeURIComponent(file)}`,

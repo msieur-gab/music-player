@@ -14,7 +14,7 @@ import subprocess
 import threading
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from socketserver import ThreadingMixIn
-from urllib.parse import urlparse, unquote, parse_qs
+from urllib.parse import urlparse, unquote, parse_qs, quote
 
 # Auto-install audio analysis dependencies into a local venv
 import importlib.util
@@ -157,17 +157,29 @@ def _run_analysis(job):
 # Library scanner
 # ---------------------------------------------------------------------------
 
-def _read_album_meta(album_path, first_mp3):
+def _read_album_meta(album_path, first_file):
     meta = {"genre": "", "year": ""}
+    filepath = os.path.join(album_path, first_file)
     try:
-        from mutagen.id3 import ID3
-        tags = ID3(os.path.join(album_path, first_mp3))
-        genre_tag = tags.get("TCON")
-        if genre_tag:
-            meta["genre"] = str(genre_tag)
-        year_tag = tags.get("TDRC")
-        if year_tag:
-            meta["year"] = str(year_tag)
+        if first_file.lower().endswith(".mp3"):
+            from mutagen.id3 import ID3
+            tags = ID3(filepath)
+            genre_tag = tags.get("TCON")
+            if genre_tag:
+                meta["genre"] = str(genre_tag)
+            year_tag = tags.get("TDRC")
+            if year_tag:
+                meta["year"] = str(year_tag)
+        elif first_file.lower().endswith(".m4a"):
+            from mutagen.mp4 import MP4
+            audio = MP4(filepath)
+            if audio.tags:
+                genre = audio.tags.get("\xa9gen")
+                if genre:
+                    meta["genre"] = genre[0]
+                year = audio.tags.get("\xa9day")
+                if year:
+                    meta["year"] = str(year[0])[:4]
     except Exception:
         pass
     return meta
@@ -201,7 +213,7 @@ def scan_library():
                 continue
             files = sorted(
                 f for f in os.listdir(album_path)
-                if f.lower().endswith('.mp3')
+                if f.lower().endswith(('.mp3', '.m4a'))
             )
             if not files:
                 continue
@@ -220,7 +232,7 @@ def scan_library():
             albums.append({
                 "artist": artist, "album": album,
                 "tracks": tracks, "trackCount": len(files),
-                "cover": f"/music/{artist}/{album}/cover.jpg" if has_cover else None,
+                "cover": f"/music/{quote(artist)}/{quote(album)}/cover.jpg" if has_cover else None,
                 "genre": meta["genre"], "year": meta["year"],
             })
     return albums
@@ -231,6 +243,11 @@ def scan_library():
 # ---------------------------------------------------------------------------
 
 class Handler(SimpleHTTPRequestHandler):
+    extensions_map = {
+        **SimpleHTTPRequestHandler.extensions_map,
+        '.m4a': 'audio/mp4',
+    }
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT, **kwargs)
 

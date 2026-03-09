@@ -12,13 +12,14 @@ Architecture:
 
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from db import (
     _connect, FEATURE_COLS, PROFILE_FEATURES,
     insert_track, update_norm_ranges, get_norm_ranges,
 )
 from extractor import extract_track_features
+from tags import read_tag, write_tag, has_current_tag, CURRENT_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -172,12 +173,18 @@ CONTEXT_PROFILES = {
 # ---------------------------------------------------------------------------
 
 def classify_track(features, norm_ranges):
-    """Score a track against each context profile. Returns {zone_id: score}."""
+    """Score a track against each context profile. Returns {zone_id: score}.
+
+    Uses inverse Euclidean distance on normalized 0-1 vectors.
+    Score = 1 / (1 + dist), so 1.0 = perfect match, ~0 = far away.
+    This gives much better separation than cosine on short positive vectors.
+    """
     track_vec = _normalize_vec(features, norm_ranges)
     scores = {}
     for ctx_id, profile in CONTEXT_PROFILES.items():
         target_vec = [profile["target"].get(f, 0.5) for f in PROFILE_FEATURES]
-        scores[ctx_id] = round(_cosine(track_vec, target_vec), 4)
+        dist = sum((a - b) ** 2 for a, b in zip(track_vec, target_vec)) ** 0.5
+        scores[ctx_id] = round(1.0 / (1.0 + dist), 4)
     return scores
 
 
@@ -203,33 +210,44 @@ def _score_all_tracks(conn):
 # ---------------------------------------------------------------------------
 
 def analyze_library(music_root, on_progress=None, workers=4):
-    """Analyze all MP3s: extract features with librosa (parallel)."""
+    """Analyze audio files: read from tags when available, extract with librosa otherwise."""
     conn = _connect(music_root)
     existing = {row[0] for row in conn.execute("SELECT track_id FROM tracks").fetchall()}
 
-    mp3s = _find_mp3s(music_root)
-    total = len(mp3s)
+    audio_files = _find_audio_files(music_root)
+    total = len(audio_files)
     skipped = 0
+    from_tags = 0
 
     work = []
-    for path in mp3s:
+    for path in audio_files:
         artist, album, title = _info_from_path(path, music_root)
         track_id = f"{artist}::{album}::{title}"
         if track_id in existing:
             skipped += 1
+            continue
+
+        # Try reading features from the file's embedded tag
+        feats, version = read_tag(path)
+        if feats and version == CURRENT_VERSION:
+            insert_track(
+                conn, track_id, artist, album, title,
+                os.path.relpath(path, music_root), feats,
+            )
+            from_tags += 1
         else:
             work.append((path, artist, album, title, track_id))
 
     if on_progress:
         on_progress({
-            "message": f"Extracting features: {len(work)} tracks "
-                       f"({skipped} cached, {workers} workers)",
+            "message": f"Loaded {from_tags} from tags, extracting {len(work)} tracks "
+                       f"({skipped} in DB, {workers} workers)",
             "track": 0, "total": total, "status": "analyzing",
         })
 
     done = 0
     analyzed = 0
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    with ProcessPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(extract_track_features, item[0]): item for item in work}
         for future in as_completed(futures):
             done += 1
@@ -241,6 +259,8 @@ def analyze_library(music_root, on_progress=None, workers=4):
                         conn, track_id, artist, album, title,
                         os.path.relpath(path, music_root), feats,
                     )
+                    # Write features back to the file's tag for next time
+                    write_tag(path, feats)
                     analyzed += 1
             except Exception as e:
                 print(f"  Error extracting {title}: {e}")
@@ -248,7 +268,8 @@ def analyze_library(music_root, on_progress=None, workers=4):
             if on_progress:
                 on_progress({
                     "message": f"Extracted {done}/{len(work)}: {title}",
-                    "track": skipped + done, "total": total, "status": "analyzing",
+                    "track": skipped + from_tags + done, "total": total,
+                    "status": "analyzing",
                 })
 
     # Update normalization ranges after new tracks added
@@ -257,8 +278,9 @@ def analyze_library(music_root, on_progress=None, workers=4):
 
     if on_progress:
         on_progress({
-            "message": f"Done — {analyzed} new tracks ({skipped} cached)",
-            "analyzed": analyzed, "skipped": skipped, "total": total,
+            "message": f"Done — {from_tags} from tags, {analyzed} extracted ({skipped} cached)",
+            "analyzed": analyzed, "from_tags": from_tags,
+            "skipped": skipped, "total": total,
             "status": "complete",
         })
 
@@ -268,7 +290,9 @@ def analyze_library(music_root, on_progress=None, workers=4):
 # ---------------------------------------------------------------------------
 
 def get_zones(music_root):
-    """Return context/zone summaries with track counts (computed live)."""
+    """Return context/zone summaries with track counts (computed live).
+
+    """
     conn = _connect(music_root)
     scored = _score_all_tracks(conn)
     conn.close()
@@ -402,13 +426,16 @@ def _mmr_order(candidates, target_vec, limit, diversity=0.3):
 def find_similar(track_id, music_root, limit=10):
     """Find tracks most similar to the given one.
 
-    Builds a full feature vector from:
-      - 10 normalized profile features (tempo, energy, dynamics, etc.)
-      - 13 MFCC means (timbral identity — what it "sounds like")
-      - 13 MFCC stds (timbral consistency)
-      - 7 spectral contrast bands (harmonic structure)
+    Builds a normalized feature vector from:
+      - 10 profile features (tempo, energy, dynamics, etc.) — min-max normalized
+      - 13 MFCC means (timbral identity) — z-score normalized across library
+      - 13 MFCC stds (timbral consistency) — z-score normalized
+      - 7 spectral contrast bands (harmonic structure) — z-score normalized
 
-    Total: 43 dimensions scored via cosine similarity.
+    All components are normalized to comparable scales so no single group
+    dominates the distance calculation.
+
+    Scored via inverse Euclidean distance for better separation than cosine.
     """
     import json as _json
 
@@ -421,53 +448,77 @@ def find_similar(track_id, music_root, limit=10):
         return []
 
     ranges = get_norm_ranges(conn)
-    rows = conn.execute(
-        "SELECT * FROM tracks WHERE track_id != ?", (track_id,)
-    ).fetchall()
+    all_rows = conn.execute("SELECT * FROM tracks").fetchall()
     conn.close()
 
+    # Compute library-wide mean/std for MFCC, MFCC std, and contrast
+    # so we can z-score normalize them to the same scale as profile features
+    all_mfcc = []
+    all_mfcc_s = []
+    all_contrast = []
+    for row in all_rows:
+        m = _json.loads(row["mfcc_mean_json"]) if isinstance(row["mfcc_mean_json"], str) else row["mfcc_mean_json"]
+        s = _json.loads(row["mfcc_std_json"]) if isinstance(row["mfcc_std_json"], str) else row["mfcc_std_json"]
+        c = _json.loads(row["contrast_mean_json"]) if isinstance(row["contrast_mean_json"], str) else row["contrast_mean_json"]
+        if m: all_mfcc.append(m)
+        if s: all_mfcc_s.append(s)
+        if c: all_contrast.append(c)
+
+    def _stats(arrays, dims):
+        """Compute per-dimension mean and std."""
+        if not arrays:
+            return [0] * dims, [1] * dims
+        means = [sum(a[i] for a in arrays) / len(arrays) for i in range(dims)]
+        stds = [max((sum((a[i] - means[i])**2 for a in arrays) / len(arrays))**0.5, 1e-6)
+                for i in range(dims)]
+        return means, stds
+
+    mfcc_mean, mfcc_std = _stats(all_mfcc, 13)
+    mfccs_mean, mfccs_std = _stats(all_mfcc_s, 13)
+    cont_mean, cont_std = _stats(all_contrast, 7)
+
     def _full_vec(row):
-        """Build full similarity vector: profile features + MFCC + contrast."""
-        # Normalized scalar features
+        """Build normalized similarity vector — all components on 0-1 scale."""
         vec = []
+
+        # Profile features (already min-max normalized)
         for f in PROFILE_FEATURES:
             r = ranges.get(f, [0, 0])
             lo, hi = r[0], r[1]
             val = row[f] if row[f] is not None else 0
             vec.append((val - lo) / (hi - lo) if hi > lo else 0.5)
 
-        # MFCC mean (13 dims) — the timbral fingerprint
-        mfcc_mean = row["mfcc_mean_json"]
-        if isinstance(mfcc_mean, str):
-            mfcc_mean = _json.loads(mfcc_mean)
-        vec.extend(mfcc_mean or [0] * 13)
+        # MFCC mean — z-score normalized
+        m = _json.loads(row["mfcc_mean_json"]) if isinstance(row["mfcc_mean_json"], str) else row["mfcc_mean_json"]
+        m = m or [0] * 13
+        vec.extend((m[i] - mfcc_mean[i]) / mfcc_std[i] for i in range(13))
 
-        # MFCC std (13 dims) — timbral consistency
-        mfcc_std = row["mfcc_std_json"]
-        if isinstance(mfcc_std, str):
-            mfcc_std = _json.loads(mfcc_std)
-        vec.extend(mfcc_std or [0] * 13)
+        # MFCC std — z-score normalized
+        s = _json.loads(row["mfcc_std_json"]) if isinstance(row["mfcc_std_json"], str) else row["mfcc_std_json"]
+        s = s or [0] * 13
+        vec.extend((s[i] - mfccs_mean[i]) / mfccs_std[i] for i in range(13))
 
-        # Spectral contrast (7 dims) — harmonic structure
-        contrast = row["contrast_mean_json"]
-        if isinstance(contrast, str):
-            contrast = _json.loads(contrast)
-        vec.extend(contrast or [0] * 7)
+        # Spectral contrast — z-score normalized
+        c = _json.loads(row["contrast_mean_json"]) if isinstance(row["contrast_mean_json"], str) else row["contrast_mean_json"]
+        c = c or [0] * 7
+        vec.extend((c[i] - cont_mean[i]) / cont_std[i] for i in range(7))
 
         return vec
 
     target_vec = _full_vec(target_row)
 
     results = []
-    for row in rows:
+    for row in all_rows:
         vec = _full_vec(row)
-        score = _cosine(target_vec, vec)
+        dist = sum((a - b) ** 2 for a, b in zip(target_vec, vec)) ** 0.5
+        score = 1.0 / (1.0 + dist)
         results.append({
             "key": row["track_id"],
             "artist": row["artist"],
             "album": row["album"],
             "title": row["title"],
             "file": row["file"],
+            "url": f"/music/{row['file']}",
             "score": round(score, 4),
         })
 
@@ -498,18 +549,18 @@ def _cosine(a, b):
     return dot / (na * nb) if na and nb else 0
 
 
-def _find_mp3s(music_root):
-    """Walk the music directory and return sorted list of MP3 paths."""
-    mp3s = []
+def _find_audio_files(music_root):
+    """Walk the music directory and return sorted list of audio file paths."""
+    audio = []
     for root, _, files in os.walk(music_root):
         for f in sorted(files):
-            if f.lower().endswith(".mp3") and not f.startswith("_temp_"):
-                mp3s.append(os.path.join(root, f))
-    return mp3s
+            if f.lower().endswith((".m4a", ".mp3")) and not f.startswith("_temp_"):
+                audio.append(os.path.join(root, f))
+    return audio
 
 
 def _info_from_path(filepath, music_root):
-    """Derive artist/album/title from path: root/Artist/Album/01 - Title.mp3"""
+    """Derive artist/album/title from path: root/Artist/Album/01 - Title.{m4a,mp3}"""
     rel = os.path.relpath(filepath, music_root)
     parts = rel.replace("\\", "/").split("/")
     artist = parts[0] if len(parts) >= 3 else "Unknown"

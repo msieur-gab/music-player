@@ -28,15 +28,31 @@ def extract_track_features(filepath):
     if duration < 3:
         return None
 
-    # Load segments for multi-point sampling
-    segments = _load_segments(filepath, duration)
+    # Single load: up to 90s from 5% in, covers all 3 sample points + tempo/key
+    # This avoids 4 separate file reads (the main bottleneck on USB drives)
+    load_offset = max(0, duration * 0.05)
+    load_duration = min(90, duration - load_offset)
+    try:
+        y_full, sr = librosa.load(
+            filepath, sr=22050, offset=load_offset, duration=load_duration, mono=True
+        )
+    except Exception:
+        return None
+
+    if len(y_full) < sr:
+        return None
+
+    actual_loaded = len(y_full) / sr
+
+    # Slice segments from the single loaded buffer
+    segments = _slice_segments(y_full, sr, actual_loaded)
     if not segments:
         return None
 
     # Per-segment features, then aggregate
     seg_feats = []
-    for y, sr in segments:
-        sf = _segment_features(y, sr)
+    for y_seg in segments:
+        sf = _segment_features(y_seg, sr)
         if sf:
             seg_feats.append(sf)
 
@@ -83,15 +99,14 @@ def extract_track_features(filepath):
     contrast_vecs = [np.array(f["contrast_mean"]) for f in seg_feats]
     result["contrast_mean"] = np.mean(contrast_vecs, axis=0).tolist()
 
-    # Tempo + key/mode from 60s excerpt starting at 30% (catches slow-build tracks)
+    # Tempo + key/mode from the loaded buffer (use up to 60s from middle)
     try:
-        offset = duration * 0.3 if duration > 90 else 0
-        y_long, sr = librosa.load(
-            filepath, sr=22050, offset=offset, duration=60, mono=True
-        )
-        tempo, _ = librosa.beat.beat_track(y=y_long, sr=sr)
+        mid = len(y_full) // 2
+        half_window = min(30 * sr, mid)
+        y_tempo = y_full[mid - half_window:mid + half_window]
+        tempo, _ = librosa.beat.beat_track(y=y_tempo, sr=sr)
         result["tempo"] = float(np.atleast_1d(tempo)[0])
-        key, mode = _extract_key_mode(y_long, sr)
+        key, mode = _extract_key_mode(y_tempo, sr)
         result["key"] = key
         result["mode"] = mode
     except Exception as e:
@@ -103,53 +118,53 @@ def extract_track_features(filepath):
     return result
 
 
-def _load_segments(filepath, duration, seg_dur=10.0):
-    """Load 3 segments at 15%, 50%, 85%. Falls back to whole track if short."""
+def _slice_segments(y, sr, loaded_dur, seg_dur=10.0):
+    """Slice 3 segments at 15%, 50%, 85% of the loaded audio buffer."""
+    seg_samples = int(seg_dur * sr)
+
+    if loaded_dur < 15:
+        return [y]
+
     segments = []
-
-    if duration < 15:
-        try:
-            y, sr = librosa.load(filepath, sr=22050, mono=True)
-            if len(y) >= sr:
-                segments.append((y, sr))
-        except Exception:
-            pass
-        return segments
-
     for pct in (0.15, 0.50, 0.85):
-        offset = max(0, duration * pct - seg_dur / 2)
-        if offset + seg_dur > duration:
-            offset = max(0, duration - seg_dur)
-        try:
-            y, sr = librosa.load(
-                filepath, sr=22050, offset=offset, duration=seg_dur, mono=True
-            )
-            if len(y) >= sr:
-                segments.append((y, sr))
-        except Exception:
-            continue
+        center = int(loaded_dur * pct * sr)
+        start = max(0, center - seg_samples // 2)
+        end = start + seg_samples
+        if end > len(y):
+            start = max(0, len(y) - seg_samples)
+            end = len(y)
+        seg = y[start:end]
+        if len(seg) >= sr:
+            segments.append(seg)
 
     return segments
 
 
 def _segment_features(y, sr):
-    """Extract features from a single audio segment."""
+    """Extract features from a single audio segment.
+
+    Computes STFT once and reuses it for all spectral features,
+    avoiding ~8 redundant FFT passes per segment.
+    """
     try:
-        # RMS energy (linear)
-        rms = librosa.feature.rms(y=y)[0]
+        # Single STFT — reused by all spectral features below
+        S = np.abs(librosa.stft(y, n_fft=2048, hop_length=512))
+        S_power = S ** 2
+
+        # RMS energy (from STFT power)
+        rms = np.sqrt(np.mean(S_power, axis=0))
         rms_linear = float(np.mean(rms))
-        rms_db_frames = librosa.amplitude_to_db(rms, ref=1.0).tolist()
+        rms_db_frames = (20 * np.log10(rms + 1e-10)).tolist()
 
         # Spectral centroid (Hz)
-        centroid = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
+        centroid = librosa.feature.spectral_centroid(S=S, sr=sr)[0]
         centroid_mean = float(np.mean(centroid))
 
         # Spectral flatness (0-1, higher = noisier)
-        flatness = librosa.feature.spectral_flatness(y=y)[0]
+        flatness = librosa.feature.spectral_flatness(S=S)[0]
         flatness_mean = float(np.mean(flatness))
 
-        # Spectral flux (mean L2 norm of frame-to-frame spectral change)
-        S = np.abs(librosa.stft(y, n_fft=2048, hop_length=512))
+        # Spectral flux (frame-to-frame spectral change)
         if S.shape[1] > 1:
             diff = np.diff(S, axis=1)
             flux_per_frame = np.sqrt(np.sum(diff ** 2, axis=0))
@@ -157,35 +172,33 @@ def _segment_features(y, sr):
         else:
             spectral_flux = 0.0
 
-        # Onset strength
-        onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+        # Onset strength (from power spectrogram)
+        S_db = librosa.power_to_db(S_power)
+        onset_env = librosa.onset.onset_strength(S=S_db, sr=sr)
         onset_strength = float(np.mean(onset_env))
 
-        # Beat strength: p75 of onset envelope (robust on short segments
-        # where beat_track can't lock onto a pulse reliably)
+        # Beat strength: p75 of onset envelope
         beat_strength = float(np.percentile(onset_env, 75))
 
-        # Vocal proxy via HPSS — harmonic ratio dampened by harmonic flatness.
-        # Pure harmonic instruments (piano, sax) score high on h_energy/total
-        # but also have low spectral flatness. Multiplying by (1 - flatness)
-        # penalizes purely tonal content, keeping vocal-like content higher.
-        harmonic, _ = librosa.effects.hpss(y)
-        h_energy = float(np.sum(harmonic ** 2))
-        total_energy = float(np.sum(y ** 2))
+        # Vocal proxy via HPSS on existing STFT (no second FFT)
+        H, _ = librosa.decompose.hpss(S)
+        h_energy = float(np.sum(H ** 2))
+        total_energy = float(np.sum(S_power))
         harmonic_ratio = h_energy / total_energy if total_energy > 1e-10 else 0.0
-        h_flatness = float(np.mean(librosa.feature.spectral_flatness(y=harmonic)[0]))
+        h_flatness = float(np.mean(librosa.feature.spectral_flatness(S=H)[0]))
         vocal_proxy = harmonic_ratio * (1.0 - h_flatness)
 
-        # MFCC (13 coefficients — mean + std over time)
-        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
+        # MFCC (from STFT power — no extra FFT)
+        mel_S = librosa.feature.melspectrogram(S=S_power, sr=sr)
+        mfcc = librosa.feature.mfcc(S=librosa.power_to_db(mel_S), n_mfcc=13)
         mfcc_mean = np.mean(mfcc, axis=1).tolist()
         mfcc_std = np.std(mfcc, axis=1).tolist()
 
-        # Spectral contrast (7 bands — piggybacks on STFT already computed)
-        contrast = librosa.feature.spectral_contrast(y=y, sr=sr)
+        # Spectral contrast (from existing STFT)
+        contrast = librosa.feature.spectral_contrast(S=S, sr=sr)
         contrast_mean = np.mean(contrast, axis=1).tolist()
 
-        # Zero-crossing rate
+        # Zero-crossing rate (time-domain, cheap)
         zcr_mean = float(np.mean(librosa.feature.zero_crossing_rate(y)[0]))
 
         return {
