@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MusiCast — Prototypes</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&family=Instrument+Serif:ital@0;1&display=swap');
+
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #0e0e10;
+    --surface: #161619;
+    --border: #222226;
+    --text: #e8e6e3;
+    --text-muted: #6e6d6a;
+    --accent: #c4704b;
+    --accent-glow: rgba(196, 112, 75, 0.08);
+  }
+
+  body {
+    font-family: 'DM Sans', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* --- Grain overlay --- */
+  body::after {
+    content: '';
+    position: fixed; inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 100;
+  }
+
+  .page {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 80px 32px 120px;
+  }
+
+  /* --- Header --- */
+  .header {
+    margin-bottom: 72px;
+  }
+
+  .header h1 {
+    font-family: 'Instrument Serif', serif;
+    font-weight: 400;
+    font-size: 42px;
+    letter-spacing: -0.01em;
+    line-height: 1.1;
+    color: var(--text);
+  }
+
+  .header h1 span {
+    color: var(--accent);
+  }
+
+  .header p {
+    margin-top: 14px;
+    font-size: 14px;
+    font-weight: 300;
+    color: var(--text-muted);
+    letter-spacing: 0.02em;
+    max-width: 440px;
+    line-height: 1.6;
+  }
+
+  .divider {
+    width: 40px;
+    height: 1px;
+    background: var(--border);
+    margin-top: 28px;
+  }
+
+  /* --- Prototype grid --- */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 20px;
+  }
+
+  .card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 26px 24px;
+    min-height: 210px;
+    text-decoration: none;
+    color: inherit;
+    transition: border-color 0.4s ease, box-shadow 0.4s ease, transform 0.3s ease;
+    overflow: hidden;
+  }
+
+  .card::before {
+    content: '';
+    position: absolute;
+    top: -60px; right: -60px;
+    width: 160px; height: 160px;
+    border-radius: 50%;
+    background: var(--accent-glow);
+    filter: blur(40px);
+    opacity: 0;
+    transition: opacity 0.5s ease;
+    pointer-events: none;
+  }
+
+  .card:hover {
+    border-color: rgba(196, 112, 75, 0.25);
+    box-shadow: 0 4px 40px rgba(0, 0, 0, 0.3);
+    transform: translateY(-2px);
+  }
+
+  .card:hover::before {
+    opacity: 1;
+  }
+
+  .card-number {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin-bottom: 16px;
+  }
+
+  .card-body {
+    flex: 1;
+  }
+
+  .card h2 {
+    font-family: 'Instrument Serif', serif;
+    font-weight: 400;
+    font-size: 24px;
+    line-height: 1.2;
+    margin-bottom: 10px;
+    letter-spacing: -0.01em;
+  }
+
+  .card p {
+    font-size: 13px;
+    font-weight: 300;
+    color: var(--text-muted);
+    line-height: 1.6;
+    max-width: 300px;
+  }
+
+  .card-footer {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 20px;
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--accent);
+    letter-spacing: 0.02em;
+    opacity: 0;
+    transform: translateX(-4px);
+    transition: opacity 0.3s ease, transform 0.3s ease;
+  }
+
+  .card:hover .card-footer {
+    opacity: 1;
+    transform: translateX(0);
+  }
+
+  .card-footer svg {
+    width: 14px; height: 14px;
+    stroke: var(--accent);
+    fill: none;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  /* --- Entrance animation --- */
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(16px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .header { animation: fadeUp 0.6s ease both; }
+  .card { animation: fadeUp 0.6s ease both; }
+  .card:nth-child(1) { animation-delay: 0.15s; }
+  .card:nth-child(2) { animation-delay: 0.25s; }
+  .card:nth-child(3) { animation-delay: 0.35s; }
+  .card:nth-child(4) { animation-delay: 0.45s; }
+</style>
+</head>
+<body>
+
+<div class="page">
+  <header class="header">
+    <h1>MusiCast — <span>Prototypes</span></h1>
+    <p>Experimental interaction patterns for emotion-driven music discovery</p>
+    <div class="divider"></div>
+  </header>
+
+  <div class="grid">
+
+    <a href="emotional-map.html" class="card">
+      <span class="card-number">01</span>
+      <div class="card-body">
+        <h2>Emotional Map</h2>
+        <p>Navigate your music library by dragging a dot across an emotional landscape. Intensity knob controls playlist diversity.</p>
+      </div>
+      <div class="card-footer">
+        Open prototype
+        <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+      </div>
+    </a>
+
+    <a href="sonic-match.html" class="card">
+      <span class="card-number">02</span>
+      <div class="card-body">
+        <h2>Sonic Match</h2>
+        <p>Search for any track, then discover every song in your library that shares its sonic DNA.</p>
+      </div>
+      <div class="card-footer">
+        Open prototype
+        <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+      </div>
+    </a>
+
+    <a href="sonic-sculpt.html" class="card">
+      <span class="card-number">03</span>
+      <div class="card-body">
+        <h2>Sonic Sculpt</h2>
+        <p>Shape your sound with sliders for texture, movement, brightness, and dynamics. Dial in cinematic drones or driving rhythms.</p>
+      </div>
+      <div class="card-footer">
+        Open prototype
+        <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+      </div>
+    </a>
+
+    <!-- Add more cards here:
+    <a href="next-prototype.html" class="card">
+      <span class="card-number">02</span>
+      <div class="card-body">
+        <h2>Title</h2>
+        <p>Description.</p>
+      </div>
+      <div class="card-footer">
+        Open prototype
+        <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+      </div>
+    </a>
+    -->
+
+  </div>
+</div>
+
+</body>
+</html>

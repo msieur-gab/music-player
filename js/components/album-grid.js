@@ -98,6 +98,13 @@ tpl.innerHTML = `
   margin-top: 2px;
 }
 
+.summary {
+  grid-column: 1 / -1;
+  font-size: 13px;
+  color: var(--text-muted);
+  padding: 0 0 8px;
+}
+
 @media (max-width: 600px) {
   .grid {
     grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
@@ -136,7 +143,7 @@ class AlbumGrid extends HTMLElement {
       a.artist.toLowerCase().includes(q) ||
       a.album.toLowerCase().includes(q) ||
       (a.genre || '').toLowerCase().includes(q) ||
-      a.tracks.some(t => t.toLowerCase().includes(q))
+      a.tracks.some(t => (typeof t === 'string' ? t : t.file).toLowerCase().includes(q))
     );
   }
 
@@ -150,6 +157,21 @@ class AlbumGrid extends HTMLElement {
       </div>`;
       return;
     }
+
+    // Summary: album count, track count, total hours
+    const totalTracks = albums.reduce((s, a) => s + a.trackCount, 0);
+    const totalSecs = albums.reduce((s, a) =>
+      s + a.tracks.reduce((ts, t) => ts + (typeof t === 'string' ? 0 : (t.duration || 0)), 0), 0);
+    const parts = [`${albums.length} albums`, `${totalTracks} tracks`];
+    if (totalSecs > 0) {
+      const h = Math.floor(totalSecs / 3600);
+      const m = Math.floor((totalSecs % 3600) / 60);
+      parts.push(h > 0 ? `${h}h ${m}m` : `${m}m`);
+    }
+    const summary = document.createElement('div');
+    summary.className = 'summary';
+    summary.textContent = parts.join(' \u2022 ');
+    this._grid.appendChild(summary);
 
     for (const album of albums) {
       const card = document.createElement('article');

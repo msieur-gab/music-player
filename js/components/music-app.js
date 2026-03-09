@@ -439,7 +439,8 @@ class MusicApp extends HTMLElement {
   // ── Playback ──
 
   _play({ artist, album, cover, tracks, index }) {
-    this._queue = tracks.map((file) => {
+    this._queue = tracks.map((t) => {
+      const file = typeof t === 'string' ? t : t.file;
       const match = file.match(/^\d+\s*-\s*(.+)\.mp3$/i);
       const title = match ? match[1] : file;
       return {
@@ -466,8 +467,9 @@ class MusicApp extends HTMLElement {
   _playLocal() {
     const track = this._queue[this._queueIndex];
     if (!track) return;
+    this._audio.pause();
     this._audio.src = track.url;
-    this._audio.play();
+    this._audio.play().catch(() => {});
     this._updateMediaSession(track);
     recordPlay(track);
   }
@@ -534,11 +536,11 @@ class MusicApp extends HTMLElement {
     } else {
       switch (action.type) {
         case 'play':
-          this._audio.play(); break;
+          this._audio.play().catch(() => {}); break;
         case 'pause':
           this._audio.pause(); break;
         case 'toggle':
-          this._audio.paused ? this._audio.play() : this._audio.pause(); break;
+          this._audio.paused ? this._audio.play().catch(() => {}) : this._audio.pause(); break;
         case 'next':
           if (this._queueIndex < this._queue.length - 1) {
             this._queueIndex++;

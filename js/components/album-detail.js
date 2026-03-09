@@ -187,6 +187,14 @@ tpl.innerHTML = `
   gap: 1px;
 }
 
+.track-dur {
+  font-size: 12px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  margin-left: 12px;
+  flex-shrink: 0;
+}
+
 @media (max-width: 600px) {
   .header { flex-direction: column; gap: 16px; }
   .cover, .cover-ph { width: 140px; height: 140px; }
@@ -296,6 +304,8 @@ class AlbumDetail extends HTMLElement {
     if (a.year) parts.push(a.year);
     if (a.genre) parts.push(a.genre);
     parts.push(`${a.trackCount} tracks`);
+    const totalDur = a.tracks.reduce((sum, t) => sum + (typeof t === 'string' ? 0 : (t.duration || 0)), 0);
+    if (totalDur) parts.push(this._fmtDur(totalDur));
     this.shadowRoot.getElementById('meta').textContent = parts.join(' \u2022 ');
 
     this.shadowRoot.getElementById('play-all').innerHTML =
@@ -342,9 +352,19 @@ class AlbumDetail extends HTMLElement {
       const idx = tracks.findIndex(t => decoded.includes(t.file));
       this.highlightTrack(idx);
     } else if (albumTracks) {
-      const idx = albumTracks.findIndex(f => decoded.includes(f));
+      const idx = albumTracks.findIndex(t => {
+        const f = typeof t === 'string' ? t : t.file;
+        return decoded.includes(f);
+      });
       this.highlightTrack(idx);
     }
+  }
+
+  _fmtDur(s) {
+    if (!s || !isFinite(s)) return '';
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec.toString().padStart(2, '0')}`;
   }
 
   _renderTracks() {
@@ -352,7 +372,9 @@ class AlbumDetail extends HTMLElement {
     list.innerHTML = '';
     if (!this._album) return;
 
-    this._album.tracks.forEach((file, i) => {
+    this._album.tracks.forEach((t, i) => {
+      const file = typeof t === 'string' ? t : t.file;
+      const duration = typeof t === 'string' ? 0 : (t.duration || 0);
       const match = file.match(/^(\d+)\s*-\s*(.+)\.mp3$/i);
       const num = match ? match[1] : String(i + 1).padStart(2, '0');
       const name = match ? match[2] : file;
@@ -370,6 +392,14 @@ class AlbumDetail extends HTMLElement {
       nameSpan.textContent = name;
 
       li.append(numSpan, nameSpan);
+
+      if (duration) {
+        const durSpan = document.createElement('span');
+        durSpan.className = 'track-dur';
+        durSpan.textContent = this._fmtDur(duration);
+        li.append(durSpan);
+      }
+
       list.appendChild(li);
     });
   }

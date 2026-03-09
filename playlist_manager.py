@@ -4,7 +4,8 @@ Uses the same SQLite database as the analyzer.
 """
 
 import os
-from analyzer import _connect, ZONES
+from db import _connect
+from analyzer import CONTEXT_PROFILES
 
 
 def save_playlist(name, zone_id, track_keys, music_root):
@@ -43,7 +44,7 @@ def list_playlists(music_root):
         "id": r["id"],
         "name": r["name"],
         "zone": r["zone_id"],
-        "zoneLabel": ZONES.get(r["zone_id"], {}).get("label", ""),
+        "zoneLabel": CONTEXT_PROFILES.get(r["zone_id"], {}).get("label", ""),
         "trackCount": r["track_count"],
         "createdAt": r["created_at"],
     } for r in rows]
@@ -62,9 +63,9 @@ def get_playlist(playlist_id, music_root):
 
     # Join with tracks table to get full info — LEFT JOIN to handle deleted tracks
     rows = conn.execute("""
-        SELECT pt.position, t.key, t.artist, t.album, t.title, t.file
+        SELECT pt.position, t.track_id, t.artist, t.album, t.title, t.file
         FROM playlist_tracks pt
-        LEFT JOIN tracks t ON t.key = pt.track_key
+        LEFT JOIN tracks t ON t.track_id = pt.track_key
         WHERE pt.playlist_id = ?
         ORDER BY pt.position
     """, (playlist_id,)).fetchall()
@@ -74,7 +75,7 @@ def get_playlist(playlist_id, music_root):
     cover_cache = {}
     tracks = []
     for r in rows:
-        if not r["key"]:
+        if not r["track_id"]:
             continue
         artist, album = r["artist"], r["album"]
         if (artist, album) not in cover_cache:
@@ -84,7 +85,7 @@ def get_playlist(playlist_id, music_root):
                 if os.path.isfile(cover_path) else None
             )
         tracks.append({
-            "key": r["key"],
+            "key": r["track_id"],
             "artist": artist,
             "album": album,
             "title": r["title"],
@@ -93,7 +94,7 @@ def get_playlist(playlist_id, music_root):
             "url": f"/music/{r['file']}",
         })
 
-    zone = ZONES.get(playlist["zone_id"], {})
+    zone = CONTEXT_PROFILES.get(playlist["zone_id"], {})
     return {
         "id": playlist["id"],
         "name": playlist["name"],

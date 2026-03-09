@@ -5,17 +5,40 @@ Drop into a Linux environment, run `python3 server.py`, done.
 """
 
 import os
+import sys
 import json
 import uuid
 import socket
 import mimetypes
+import subprocess
 import threading
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, unquote, parse_qs
 
+# Auto-install audio analysis dependencies into a local venv
+import importlib.util
+_VENV_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv")
+_VENV_PY = os.path.join(_VENV_DIR, "bin", "python3")
+
+if not os.path.isdir(_VENV_DIR):
+    print("Creating virtual environment...")
+    subprocess.check_call([sys.executable, "-m", "venv", _VENV_DIR])
+
+# Re-exec inside the venv if we're not already in it
+if os.path.abspath(sys.executable) != os.path.abspath(_VENV_PY):
+    os.execv(_VENV_PY, [_VENV_PY] + sys.argv)
+
+_REQUIRED = ["numpy", "librosa"]
+_missing = [p for p in _REQUIRED if not importlib.util.find_spec(p)]
+if _missing:
+    print(f"Installing missing dependencies: {', '.join(_missing)}")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", *_missing],
+                          stdout=sys.stdout, stderr=sys.stderr)
+
 from downloader import bootstrap, download_playlist
 from cast_manager import CastManager
+from db import _connect
 from analyzer import analyze_library, find_similar, get_zones, generate_playlist, migrate_from_json
 from playlist_manager import save_playlist, list_playlists, get_playlist, delete_playlist
 
@@ -150,10 +173,23 @@ def _read_album_meta(album_path, first_mp3):
     return meta
 
 
+def _load_durations():
+    """Load track durations from the analysis DB, keyed by relative file path."""
+    try:
+        conn = _connect(MUSIC_ROOT)
+        rows = conn.execute("SELECT file, duration FROM tracks WHERE duration > 0").fetchall()
+        conn.close()
+        return {row["file"]: row["duration"] for row in rows}
+    except Exception:
+        return {}
+
+
 def scan_library():
     albums = []
     if not os.path.isdir(MUSIC_ROOT):
         return albums
+
+    durations = _load_durations()
 
     for artist in sorted(os.listdir(MUSIC_ROOT)):
         artist_path = os.path.join(MUSIC_ROOT, artist)
@@ -173,9 +209,17 @@ def scan_library():
             has_cover = os.path.isfile(os.path.join(album_path, "cover.jpg"))
             meta = _read_album_meta(album_path, files[0])
 
+            tracks = []
+            for f in files:
+                rel = f"{artist}/{album}/{f}"
+                tracks.append({
+                    "file": f,
+                    "duration": durations.get(rel, 0),
+                })
+
             albums.append({
                 "artist": artist, "album": album,
-                "tracks": files, "trackCount": len(files),
+                "tracks": tracks, "trackCount": len(files),
                 "cover": f"/music/{artist}/{album}/cover.jpg" if has_cover else None,
                 "genre": meta["genre"], "year": meta["year"],
             })
@@ -244,6 +288,44 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json({"error": "Missing key param"}, 400)
             else:
                 self._json(find_similar(key, MUSIC_ROOT, limit))
+        elif path == '/api/tracks':
+            qs = parse_qs(urlparse(self.path).query)
+            page = int(qs.get('page', ['1'])[0])
+            per_page = int(qs.get('per_page', ['50'])[0])
+            search = qs.get('q', [''])[0]
+            sort = qs.get('sort', ['artist'])[0]
+            order = qs.get('order', ['asc'])[0]
+            conn = _connect(MUSIC_ROOT)
+            allowed_sorts = {c[1] for c in conn.execute("PRAGMA table_info(tracks)").fetchall()}
+            if sort not in allowed_sorts:
+                sort = 'artist'
+            direction = 'DESC' if order == 'desc' else 'ASC'
+            if search:
+                like = f'%{search}%'
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM tracks WHERE artist LIKE ? OR album LIKE ? OR title LIKE ?",
+                    (like, like, like)
+                ).fetchone()[0]
+                rows = conn.execute(
+                    f"SELECT * FROM tracks WHERE artist LIKE ? OR album LIKE ? OR title LIKE ? ORDER BY {sort} {direction} LIMIT ? OFFSET ?",
+                    (like, like, like, per_page, (page - 1) * per_page)
+                ).fetchall()
+            else:
+                total = conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+                rows = conn.execute(
+                    f"SELECT * FROM tracks ORDER BY {sort} {direction} LIMIT ? OFFSET ?",
+                    (per_page, (page - 1) * per_page)
+                ).fetchall()
+            import json as _json
+            tracks_list = []
+            for r in rows:
+                track = {k: r[k] for k in r.keys()}
+                for jcol in ('mfcc_mean_json', 'mfcc_std_json', 'contrast_mean_json'):
+                    if jcol in track and isinstance(track[jcol], str):
+                        track[jcol] = _json.loads(track[jcol])
+                tracks_list.append(track)
+            conn.close()
+            self._json({"tracks": tracks_list, "total": total, "page": page, "per_page": per_page})
         elif path == '/api/zones':
             self._json(get_zones(MUSIC_ROOT))
         elif path == '/api/playlist':
@@ -421,7 +503,11 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _serve_ranged(self, path):
         rel = unquote(path).lstrip('/')
-        filepath = os.path.join(ROOT, rel)
+        # Strip leading "music/" and resolve against MUSIC_ROOT (may be external drive)
+        if rel.startswith('music/'):
+            filepath = os.path.join(MUSIC_ROOT, rel[len('music/'):])
+        else:
+            filepath = os.path.join(ROOT, rel)
 
         if not os.path.isfile(filepath):
             self.send_error(404)

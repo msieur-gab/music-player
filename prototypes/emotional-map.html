@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MusiCast — Emotional Map</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&family=Instrument+Serif&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'DM Sans', sans-serif;
+    background: #0e0e10;
+    color: #e8e6e3;
+    height: 100vh;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* --- Layout --- */
+  .top-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 24px;
+    border-bottom: 1px solid #1e1e22;
+  }
+  .top-bar a {
+    color: #6e6d6a; text-decoration: none; font-size: 13px;
+    transition: color 0.2s;
+  }
+  .top-bar a:hover { color: #e8e6e3; }
+  .top-bar h1 {
+    font-family: 'Instrument Serif', serif;
+    font-weight: 400; font-size: 20px;
+  }
+  .top-bar .status { font-size: 12px; color: #6e6d6a; }
+
+  .main {
+    display: flex;
+    height: calc(100vh - 57px - 56px);
+  }
+
+  /* --- Left: map + knob --- */
+  .left-panel {
+    flex: 0 0 auto;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 32px;
+    gap: 24px;
+  }
+
+  /* --- Emotional map --- */
+  .map-container {
+    position: relative;
+    width: 480px; height: 480px;
+    border-radius: 12px;
+    overflow: hidden;
+    cursor: crosshair;
+    border: 1px solid #222226;
+  }
+
+  .map-bg {
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(ellipse at 25% 25%, rgba(150, 100, 220, 0.18) 0%, transparent 55%),
+      radial-gradient(ellipse at 75% 25%, rgba(220, 120, 60, 0.18) 0%, transparent 55%),
+      radial-gradient(ellipse at 75% 75%, rgba(80, 190, 130, 0.15) 0%, transparent 55%),
+      radial-gradient(ellipse at 25% 75%, rgba(70, 130, 200, 0.15) 0%, transparent 55%),
+      #1a1a20;
+  }
+
+  /* Axis lines */
+  .map-axis-x, .map-axis-y {
+    position: absolute; background: rgba(255,255,255,0.08);
+  }
+  .map-axis-x { left: 0; right: 0; top: 50%; height: 1px; }
+  .map-axis-y { top: 0; bottom: 0; left: 50%; width: 1px; }
+
+  /* Quadrant labels */
+  .q-label {
+    position: absolute; font-size: 12px; font-weight: 500;
+    color: rgba(255,255,255,0.50); letter-spacing: 0.06em;
+    text-transform: uppercase; pointer-events: none;
+  }
+  .q-tl { top: 16px; left: 16px; }
+  .q-tr { top: 16px; right: 16px; text-align: right; }
+  .q-bl { bottom: 16px; left: 16px; }
+  .q-br { bottom: 16px; right: 16px; text-align: right; }
+
+  /* Axis labels */
+  .axis-label {
+    position: absolute; font-size: 10px; font-weight: 500;
+    color: rgba(255,255,255,0.40); letter-spacing: 0.05em;
+    text-transform: uppercase; pointer-events: none;
+  }
+  .axis-label.energy-hi { top: 6px; left: 50%; transform: translateX(-50%); }
+  .axis-label.energy-lo { bottom: 6px; left: 50%; transform: translateX(-50%); }
+  .axis-label.valence-lo { left: 6px; top: 50%; transform: translateY(-50%) rotate(-90deg); transform-origin: left center; }
+  .axis-label.valence-hi { right: 6px; top: 50%; transform: translateY(-50%) rotate(90deg); transform-origin: right center; }
+
+  /* The dot */
+  .dot {
+    position: absolute;
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    background: #c4704b;
+    box-shadow: 0 0 20px rgba(196, 112, 75, 0.5), 0 0 60px rgba(196, 112, 75, 0.15);
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    transition: box-shadow 0.2s;
+    z-index: 2;
+  }
+  .dot.active {
+    box-shadow: 0 0 28px rgba(196, 112, 75, 0.7), 0 0 80px rgba(196, 112, 75, 0.25);
+  }
+
+  /* --- Intensity slider --- */
+  .slider-section {
+    display: flex; align-items: center; gap: 16px;
+    width: 100%; max-width: 400px;
+  }
+  .slider-label {
+    font-size: 11px; color: #6e6d6a; font-weight: 400;
+    text-transform: uppercase; letter-spacing: 0.04em;
+    flex-shrink: 0;
+  }
+  .slider-section input[type="range"] {
+    flex: 1;
+    -webkit-appearance: none; appearance: none;
+    height: 4px;
+    background: #2a2a2e;
+    border-radius: 2px;
+    outline: none;
+  }
+  .slider-section input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: #c4704b;
+    cursor: pointer;
+    box-shadow: 0 0 8px rgba(196, 112, 75, 0.3);
+  }
+
+  /* Current position readout */
+  .readout {
+    display: flex; gap: 24px;
+    font-size: 12px; color: #6e6d6a;
+  }
+  .readout span { color: #aaa; }
+
+  /* --- Right: playlist --- */
+  .right-panel {
+    flex: 1;
+    border-left: 1px solid #1e1e22;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+
+  .playlist-header {
+    padding: 20px 24px 16px;
+    border-bottom: 1px solid #1e1e22;
+    font-size: 13px; font-weight: 400;
+    color: #6e6d6a;
+  }
+  .playlist-header strong { color: #e8e6e3; font-weight: 500; }
+
+  .playlist {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+  }
+
+  .track-row {
+    display: flex; align-items: center;
+    padding: 8px 24px;
+    gap: 14px;
+    transition: background 0.15s;
+  }
+  .track-row:hover { background: rgba(255,255,255,0.02); }
+
+  .track-num {
+    width: 24px; text-align: right;
+    font-size: 12px; color: #4a4a4a;
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+  }
+
+  .track-info {
+    flex: 1; min-width: 0;
+  }
+  .track-title {
+    font-size: 13px; font-weight: 400;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .track-meta {
+    font-size: 11px; color: #5a5a58; margin-top: 1px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+
+  .track-score {
+    flex-shrink: 0;
+    width: 60px; height: 4px;
+    background: #1e1e22;
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .track-score-fill {
+    height: 100%;
+    background: #c4704b;
+    border-radius: 2px;
+    transition: width 0.3s ease;
+  }
+
+  .loading {
+    padding: 40px 24px;
+    text-align: center;
+    color: #4a4a4a;
+    font-size: 13px;
+  }
+
+  /* Scrollbar */
+  .playlist::-webkit-scrollbar { width: 4px; }
+  .playlist::-webkit-scrollbar-track { background: transparent; }
+  .playlist::-webkit-scrollbar-thumb { background: #2a2a2e; border-radius: 2px; }
+
+  /* Playing highlight */
+  .track-row.playing { background: rgba(196, 112, 75, 0.08); }
+  .track-row.playing .track-num { color: #c4704b; }
+  .track-row { cursor: pointer; }
+
+  /* --- Player bar --- */
+  .player-bar {
+    display: flex; align-items: center; gap: 12px;
+    height: 56px;
+    padding: 0 24px;
+    border-top: 1px solid #1e1e22;
+    background: #141416;
+    flex-shrink: 0;
+  }
+
+  .player-btn {
+    background: none; border: none; cursor: pointer;
+    color: #888; padding: 4px;
+    transition: color 0.15s;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .player-btn:hover { color: #e8e6e3; }
+  .player-btn svg { width: 20px; height: 20px; fill: currentColor; }
+  .player-btn.play-btn svg { width: 24px; height: 24px; }
+
+  .player-track-info {
+    flex: 1; min-width: 0;
+  }
+  .player-track-title {
+    font-size: 13px; font-weight: 400;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .player-track-meta {
+    font-size: 11px; color: #5a5a58; margin-top: 1px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .player-seek {
+    flex: 1; max-width: 280px;
+    -webkit-appearance: none; appearance: none;
+    height: 3px; background: #2a2a2e; border-radius: 2px; outline: none;
+    cursor: pointer;
+  }
+  .player-seek::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 10px; height: 10px; border-radius: 50%;
+    background: #c4704b; cursor: pointer;
+  }
+  .player-time {
+    font-size: 11px; color: #5a5a58;
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0; min-width: 80px; text-align: right;
+  }
+  .player-idle { font-size: 12px; color: #4a4a4a; }
+</style>
+</head>
+<body>
+
+<div class="top-bar">
+  <a href="index.html">&larr; Prototypes</a>
+  <h1>Emotional Map</h1>
+  <span class="status" id="status">Loading tracks...</span>
+</div>
+
+<div class="main">
+  <div class="left-panel">
+
+    <div class="map-container" id="map">
+      <div class="map-bg"></div>
+      <div class="map-axis-x"></div>
+      <div class="map-axis-y"></div>
+      <span class="q-label q-tl">Intense</span>
+      <span class="q-label q-tr">Euphoric</span>
+      <span class="q-label q-bl">Melancholic</span>
+      <span class="q-label q-br">Serene</span>
+      <span class="axis-label energy-hi">Energy</span>
+      <span class="axis-label energy-lo">Calm</span>
+      <span class="axis-label valence-lo">Tense</span>
+      <span class="axis-label valence-hi">Bright</span>
+      <div class="dot" id="dot"></div>
+    </div>
+
+    <div class="readout">
+      <div>Valence: <span id="val-readout">0.50</span></div>
+      <div>Energy: <span id="nrg-readout">0.50</span></div>
+    </div>
+
+    <div class="slider-section">
+      <span class="slider-label">Diverse</span>
+      <input type="range" id="intensity-slider" min="0" max="100" value="50">
+      <span class="slider-label">Tight</span>
+    </div>
+  </div>
+
+  <div class="right-panel">
+    <div class="playlist-header">
+      Matching tracks: <strong id="match-count">0</strong>
+    </div>
+    <div class="playlist" id="playlist">
+      <div class="loading">Waiting for data...</div>
+    </div>
+  </div>
+</div>
+
+<div class="player-bar" id="player-bar">
+  <button class="player-btn" id="prev-btn" title="Previous">
+    <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+  </button>
+  <button class="player-btn play-btn" id="play-btn" title="Play/Pause">
+    <svg viewBox="0 0 24 24" id="play-icon"><path d="M8 5v14l11-7z"/></svg>
+  </button>
+  <button class="player-btn" id="next-btn" title="Next">
+    <svg viewBox="0 0 24 24"><path d="M16 18h2V6h-2zM6 18l8.5-6L6 6z"/></svg>
+  </button>
+  <div class="player-track-info" id="player-info">
+    <span class="player-idle">Click a track to play</span>
+  </div>
+  <input type="range" class="player-seek" id="seek-bar" min="0" max="100" value="0">
+  <span class="player-time" id="player-time"></span>
+</div>
+
+<script>
+// --- State ---
+let allTracks = [];
+let ranges = {};      // {feature: [min, max]}
+let dotX = 0.5;       // valence 0-1
+let dotY = 0.5;       // energy 0-1 (0=top=high energy in screen coords, we invert)
+let intensity = 0.5;  // knob 0-1
+let draggingDot = false;
+
+// Feature mapping
+const ENERGY_FEATURES = ['tempo', 'rms_mean', 'onset_strength', 'beat_strength', 'spectral_flux'];
+const VALENCE_FEATURES = ['centroid_mean', 'dynamic_range', 'mode'];
+const VALENCE_INVERTED = ['flatness_mean']; // lower = more tonal = higher valence
+
+// --- Load tracks ---
+async function loadTracks() {
+  try {
+    const res = await fetch('/api/tracks?per_page=2000');
+    const data = await res.json();
+    allTracks = data.tracks || [];
+    computeRanges();
+    document.getElementById('status').textContent = `${allTracks.length} tracks loaded`;
+    updatePlaylist();
+  } catch (e) {
+    document.getElementById('status').textContent = 'Failed to load tracks';
+    document.getElementById('playlist').innerHTML =
+      '<div class="loading">Could not reach /api/tracks</div>';
+  }
+}
+
+function computeRanges() {
+  const features = [...ENERGY_FEATURES, ...VALENCE_FEATURES, ...VALENCE_INVERTED];
+  for (const f of features) {
+    const vals = allTracks.map(t => t[f] ?? 0);
+    ranges[f] = [Math.min(...vals), Math.max(...vals)];
+  }
+}
+
+function normalize(val, feature) {
+  const [min, max] = ranges[feature] || [0, 1];
+  if (max === min) return 0.5;
+  return (val - min) / (max - min);
+}
+
+// --- Scoring ---
+function scoreTrack(track) {
+  // Build target from dot position
+  // energy = 1 - dotY because screen Y is inverted (top = 0)
+  const energy = 1 - dotY;
+  const valence = dotX;
+
+  let totalDist = 0;
+  let weightSum = 0;
+
+  // Energy features: target = energy level
+  for (const f of ENERGY_FEATURES) {
+    const norm = normalize(track[f] ?? 0, f);
+    const d = norm - energy;
+    totalDist += d * d;
+    weightSum += 1;
+  }
+
+  // Valence features: target = valence level
+  for (const f of VALENCE_FEATURES) {
+    const norm = normalize(track[f] ?? 0, f);
+    const d = norm - valence;
+    totalDist += d * d;
+    weightSum += 1;
+  }
+
+  // Inverted valence features: high value = low valence
+  for (const f of VALENCE_INVERTED) {
+    const norm = 1 - normalize(track[f] ?? 0, f);
+    const d = norm - valence;
+    totalDist += d * d;
+    weightSum += 1;
+  }
+
+  const dist = Math.sqrt(totalDist / weightSum);
+  const score = Math.exp(-8 * dist * dist);
+  return score;
+}
+
+function updatePlaylist() {
+  if (!allTracks.length) return;
+
+  const scored = allTracks.map(t => ({
+    ...t,
+    score: scoreTrack(t)
+  }));
+
+  scored.sort((a, b) => b.score - a.score);
+  const top = scored.slice(0, 25);
+  const maxScore = top[0]?.score || 1;
+
+  document.getElementById('match-count').textContent = allTracks.length;
+
+  const html = top.map((t, i) => `
+    <div class="track-row">
+      <span class="track-num">${i + 1}</span>
+      <div class="track-info">
+        <div class="track-title">${esc(t.title)}</div>
+        <div class="track-meta">${esc(t.artist)} &middot; ${esc(t.album)}</div>
+      </div>
+      <div class="track-score">
+        <div class="track-score-fill" style="width: ${(t.score / maxScore * 100).toFixed(1)}%"></div>
+      </div>
+    </div>
+  `).join('');
+
+  document.getElementById('playlist').innerHTML = html;
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+// --- Dot dragging ---
+const map = document.getElementById('map');
+const dot = document.getElementById('dot');
+
+function setDotPosition(x, y) {
+  const rect = map.getBoundingClientRect();
+  dotX = Math.max(0, Math.min(1, (x - rect.left) / rect.width));
+  dotY = Math.max(0, Math.min(1, (y - rect.top) / rect.height));
+
+  dot.style.left = (dotX * 100) + '%';
+  dot.style.top = (dotY * 100) + '%';
+
+  document.getElementById('val-readout').textContent = dotX.toFixed(2);
+  document.getElementById('nrg-readout').textContent = (1 - dotY).toFixed(2);
+}
+
+// Initialize dot at center
+dot.style.left = '50%';
+dot.style.top = '50%';
+
+map.addEventListener('mousedown', e => {
+  draggingDot = true;
+  dot.classList.add('active');
+  setDotPosition(e.clientX, e.clientY);
+  updatePlaylist();
+});
+
+document.addEventListener('mousemove', e => {
+  if (draggingDot) {
+    setDotPosition(e.clientX, e.clientY);
+    updatePlaylist();
+  }
+});
+
+document.addEventListener('mouseup', () => {
+  draggingDot = false;
+
+  dot.classList.remove('active');
+});
+
+// Touch support
+map.addEventListener('touchstart', e => {
+  e.preventDefault();
+  draggingDot = true;
+  dot.classList.add('active');
+  setDotPosition(e.touches[0].clientX, e.touches[0].clientY);
+  updatePlaylist();
+}, { passive: false });
+
+document.addEventListener('touchmove', e => {
+  if (draggingDot) {
+    setDotPosition(e.touches[0].clientX, e.touches[0].clientY);
+    updatePlaylist();
+  }
+}, { passive: false });
+
+document.addEventListener('touchend', () => {
+  draggingDot = false;
+
+  dot.classList.remove('active');
+});
+
+// --- Intensity slider ---
+const slider = document.getElementById('intensity-slider');
+slider.addEventListener('input', () => {
+  intensity = slider.value / 100;
+  updatePlaylist();
+});
+
+loadTracks();
+
+// --- Audio player ---
+const audio = new Audio();
+let currentPlaylist = []; // current scored+sorted playlist
+let currentIndex = -1;
+
+audio.addEventListener('ended', () => playIndex(currentIndex + 1));
+let seeking = false;
+const seekBar = document.getElementById('seek-bar');
+seekBar.addEventListener('mousedown', () => seeking = true);
+seekBar.addEventListener('touchstart', () => seeking = true);
+seekBar.addEventListener('change', () => {
+  if (audio.duration) audio.currentTime = (seekBar.value / 100) * audio.duration;
+  seeking = false;
+});
+
+audio.addEventListener('timeupdate', () => {
+  const el = document.getElementById('player-time');
+  if (!audio.duration) { el.textContent = ''; return; }
+  if (!seeking) seekBar.value = (audio.currentTime / audio.duration) * 100;
+  el.textContent = fmtTime(audio.currentTime) + ' / ' + fmtTime(audio.duration);
+});
+audio.addEventListener('play', updatePlayIcon);
+audio.addEventListener('pause', updatePlayIcon);
+
+function fmtTime(s) {
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return m + ':' + String(sec).padStart(2, '0');
+}
+
+function updatePlayIcon() {
+  const icon = document.getElementById('play-icon');
+  if (audio.paused) {
+    icon.innerHTML = '<path d="M8 5v14l11-7z"/>';
+  } else {
+    icon.innerHTML = '<path d="M6 19h4V5H6zm8-14v14h4V5z"/>';
+  }
+}
+
+function playIndex(idx) {
+  if (!currentPlaylist.length) return;
+  if (idx < 0) idx = 0;
+  if (idx >= currentPlaylist.length) { audio.pause(); return; }
+
+  currentIndex = idx;
+  const t = currentPlaylist[idx];
+  const url = '/music/' + encodeURI(t.file);
+  audio.src = url;
+  audio.play();
+
+  document.getElementById('player-info').innerHTML =
+    `<div class="player-track-title">${esc(t.title)}</div>` +
+    `<div class="player-track-meta">${esc(t.artist)} &middot; ${esc(t.album)}</div>`;
+
+  highlightPlaying();
+}
+
+function highlightPlaying() {
+  document.querySelectorAll('.track-row').forEach((row, i) => {
+    row.classList.toggle('playing', i === currentIndex);
+  });
+}
+
+document.getElementById('play-btn').addEventListener('click', () => {
+  if (!audio.src) { playIndex(0); return; }
+  audio.paused ? audio.play() : audio.pause();
+});
+
+document.getElementById('prev-btn').addEventListener('click', () => {
+  if (audio.currentTime > 3) { audio.currentTime = 0; return; }
+  playIndex(currentIndex - 1);
+});
+
+document.getElementById('next-btn').addEventListener('click', () => {
+  playIndex(currentIndex + 1);
+});
+
+// Override updatePlaylist to also store the playlist and wire click handlers
+const _origUpdatePlaylist = updatePlaylist;
+updatePlaylist = function() {
+  if (!allTracks.length) return;
+
+  const scored = allTracks.map(t => ({
+    ...t,
+    score: scoreTrack(t)
+  }));
+
+  scored.sort((a, b) => b.score - a.score);
+
+  // Intensity = threshold: 0 (diverse) shows top 50, 1 (tight) shows only score > 0.8
+  const minScore = intensity * 0.8; // threshold range: 0 to 0.8
+  const filtered = scored.filter(t => t.score >= minScore);
+  currentPlaylist = filtered.slice(0, 50);
+  const maxScore = currentPlaylist[0]?.score || 1;
+
+  document.getElementById('match-count').textContent = currentPlaylist.length;
+
+  const html = currentPlaylist.map((t, i) => `
+    <div class="track-row${i === currentIndex ? ' playing' : ''}" data-idx="${i}">
+      <span class="track-num">${i + 1}</span>
+      <div class="track-info">
+        <div class="track-title">${esc(t.title)}</div>
+        <div class="track-meta">${esc(t.artist)} &middot; ${esc(t.album)}</div>
+      </div>
+      <div class="track-score">
+        <div class="track-score-fill" style="width: ${(t.score / maxScore * 100).toFixed(1)}%"></div>
+      </div>
+    </div>
+  `).join('');
+
+  document.getElementById('playlist').innerHTML = html;
+
+  // Wire click-to-play
+  document.querySelectorAll('.track-row').forEach(row => {
+    row.addEventListener('click', () => {
+      playIndex(parseInt(row.dataset.idx));
+    });
+  });
+};
+</script>
+</body>
+</html>

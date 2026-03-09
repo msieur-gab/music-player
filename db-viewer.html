@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MusiCast — Feature DB</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: #0e0e10; color: #e0e0e0; font-size: 13px;
+  }
+  .toolbar {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; gap: 12px; align-items: center;
+    padding: 12px 20px; background: #1a1a1e; border-bottom: 1px solid #2a2a2e;
+  }
+  .toolbar input {
+    flex: 1; max-width: 320px; padding: 6px 12px;
+    background: #0e0e10; border: 1px solid #333; border-radius: 6px;
+    color: #e0e0e0; font-size: 13px; outline: none;
+  }
+  .toolbar input:focus { border-color: #6d5dfc; }
+  .stats { color: #888; font-size: 12px; }
+  .pagination { display: flex; gap: 6px; margin-left: auto; }
+  .pagination button {
+    padding: 4px 12px; background: #222; border: 1px solid #333;
+    border-radius: 4px; color: #ccc; cursor: pointer; font-size: 12px;
+  }
+  .pagination button:disabled { opacity: 0.3; cursor: default; }
+  .pagination button:hover:not(:disabled) { background: #333; }
+  .page-info { color: #888; font-size: 12px; line-height: 28px; }
+
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; min-width: 1200px; }
+  th, td { padding: 6px 10px; text-align: left; white-space: nowrap; }
+  th {
+    position: sticky; top: 52px; z-index: 5;
+    background: #1a1a1e; border-bottom: 2px solid #333;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+    color: #888; cursor: pointer; user-select: none;
+  }
+  th:hover { color: #bbb; }
+  th.sorted { color: #6d5dfc; }
+  th .arrow { font-size: 10px; margin-left: 3px; }
+  tr { border-bottom: 1px solid #1e1e22; }
+  tr:hover { background: #1a1a1e; }
+  td { font-variant-numeric: tabular-nums; }
+  td.text { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+  td.num { text-align: right; color: #aaa; }
+  td.vec { font-size: 11px; color: #666; max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+
+  .key-badge {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    background: #222; font-size: 11px; font-weight: 600;
+  }
+  .mode-major { color: #4ade80; }
+  .mode-minor { color: #f472b6; }
+
+  .expand-row { display: none; }
+  .expand-row.open { display: table-row; }
+  .expand-cell {
+    padding: 12px 20px; background: #141418;
+    font-size: 12px; line-height: 1.8;
+  }
+  .expand-cell .vec-label { color: #888; margin-right: 8px; }
+  .expand-cell .vec-vals { color: #aaa; font-family: monospace; font-size: 11px; }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <input type="text" id="search" placeholder="Search artist, album, title...">
+  <span class="stats" id="stats"></span>
+  <div class="pagination">
+    <button id="prev">Prev</button>
+    <span class="page-info" id="page-info"></span>
+    <button id="next">Next</button>
+  </div>
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead id="thead"></thead>
+    <tbody id="tbody"></tbody>
+  </table>
+</div>
+
+<script>
+const KEY_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const SCALAR_COLS = [
+  { key: 'artist', label: 'Artist', type: 'text' },
+  { key: 'album', label: 'Album', type: 'text' },
+  { key: 'title', label: 'Title', type: 'text' },
+  { key: 'duration', label: 'Dur', type: 'num', fmt: v => {
+    const m = Math.floor(v / 60), s = Math.floor(v % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  }},
+  { key: 'tempo', label: 'BPM', type: 'num', fmt: v => v.toFixed(1) },
+  { key: 'key', label: 'Key', type: 'key' },
+  { key: 'rms_mean', label: 'RMS', type: 'num', fmt: v => v.toFixed(1) + ' dB' },
+  { key: 'rms_max', label: 'Peak', type: 'num', fmt: v => v.toFixed(1) },
+  { key: 'dynamic_range', label: 'DR', type: 'num', fmt: v => v.toFixed(1) },
+  { key: 'centroid_mean', label: 'Centroid', type: 'num', fmt: v => v.toFixed(0) + ' Hz' },
+  { key: 'flatness_mean', label: 'Flat', type: 'num', fmt: v => v.toFixed(4) },
+  { key: 'spectral_flux', label: 'Flux', type: 'num', fmt: v => v.toFixed(2) },
+  { key: 'onset_strength', label: 'Onset', type: 'num', fmt: v => v.toFixed(3) },
+  { key: 'beat_strength', label: 'Beat', type: 'num', fmt: v => v.toFixed(3) },
+  { key: 'vocal_proxy', label: 'Vocal', type: 'num', fmt: v => v.toFixed(3) },
+  { key: 'zcr_mean', label: 'ZCR', type: 'num', fmt: v => v.toFixed(4) },
+  { key: 'rms_variance', label: 'RMS Var', type: 'num', fmt: v => v.toFixed(3) },
+];
+
+let state = { page: 1, sort: 'artist', order: 'asc', q: '' };
+let debounce = null;
+
+document.getElementById('search').addEventListener('input', e => {
+  clearTimeout(debounce);
+  debounce = setTimeout(() => { state.q = e.target.value; state.page = 1; load(); }, 300);
+});
+document.getElementById('prev').addEventListener('click', () => { state.page--; load(); });
+document.getElementById('next').addEventListener('click', () => { state.page++; load(); });
+
+function buildHead() {
+  const tr = document.createElement('tr');
+  tr.innerHTML = '<th style="width:30px">#</th>';
+  for (const col of SCALAR_COLS) {
+    const th = document.createElement('th');
+    th.textContent = col.label;
+    th.dataset.key = col.key;
+    th.addEventListener('click', () => {
+      if (state.sort === col.key) {
+        state.order = state.order === 'asc' ? 'desc' : 'asc';
+      } else {
+        state.sort = col.key;
+        state.order = 'asc';
+      }
+      state.page = 1;
+      load();
+    });
+    tr.appendChild(th);
+  }
+  document.getElementById('thead').appendChild(tr);
+}
+
+async function load() {
+  const params = new URLSearchParams({
+    page: state.page, per_page: 50,
+    sort: state.sort, order: state.order, q: state.q,
+  });
+  const res = await fetch(`/api/tracks?${params}`);
+  const data = await res.json();
+  render(data);
+}
+
+function render(data) {
+  const { tracks, total, page, per_page } = data;
+  const pages = Math.ceil(total / per_page);
+
+  document.getElementById('stats').textContent = `${total} tracks`;
+  document.getElementById('page-info').textContent = `${page} / ${pages || 1}`;
+  document.getElementById('prev').disabled = page <= 1;
+  document.getElementById('next').disabled = page >= pages;
+
+  // Update header sort indicators
+  document.querySelectorAll('#thead th').forEach(th => {
+    th.classList.toggle('sorted', th.dataset.key === state.sort);
+    const existing = th.querySelector('.arrow');
+    if (existing) existing.remove();
+    if (th.dataset.key === state.sort) {
+      const arrow = document.createElement('span');
+      arrow.className = 'arrow';
+      arrow.textContent = state.order === 'asc' ? '\u25B2' : '\u25BC';
+      th.appendChild(arrow);
+    }
+  });
+
+  const tbody = document.getElementById('tbody');
+  tbody.innerHTML = '';
+  const startNum = (page - 1) * per_page;
+
+  tracks.forEach((t, i) => {
+    const tr = document.createElement('tr');
+    tr.style.cursor = 'pointer';
+
+    let html = `<td class="num">${startNum + i + 1}</td>`;
+    for (const col of SCALAR_COLS) {
+      const val = t[col.key];
+      if (col.type === 'key') {
+        const name = KEY_NAMES[val] || val;
+        const mode = t.mode === 1 ? 'major' : 'minor';
+        html += `<td><span class="key-badge mode-${mode}">${name} ${mode}</span></td>`;
+      } else if (col.type === 'num') {
+        html += `<td class="num">${col.fmt ? col.fmt(val) : val}</td>`;
+      } else {
+        html += `<td class="text" title="${val}">${val}</td>`;
+      }
+    }
+    tr.innerHTML = html;
+
+    // Expand row for vectors
+    const expandTr = document.createElement('tr');
+    expandTr.className = 'expand-row';
+    const expandTd = document.createElement('td');
+    expandTd.className = 'expand-cell';
+    expandTd.colSpan = SCALAR_COLS.length + 1;
+
+    const vecs = [
+      ['MFCC Mean (13)', t.mfcc_mean_json],
+      ['MFCC Std (13)', t.mfcc_std_json],
+      ['Contrast (7)', t.contrast_mean_json],
+    ];
+    expandTd.innerHTML = `<b>${t.track_id}</b><br>` + vecs.map(([label, vals]) =>
+      `<span class="vec-label">${label}:</span><span class="vec-vals">[${(vals || []).map(v => v.toFixed(2)).join(', ')}]</span>`
+    ).join('<br>');
+
+    expandTr.appendChild(expandTd);
+
+    tr.addEventListener('click', () => expandTr.classList.toggle('open'));
+    tbody.appendChild(tr);
+    tbody.appendChild(expandTr);
+  });
+}
+
+buildHead();
+load();
+</script>
+</body>
+</html>
