@@ -1,0 +1,827 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Soniq — Sonic Filter</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&family=Instrument+Serif&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'DM Sans', sans-serif;
+    background: #0e0e10; color: #e8e6e3;
+    height: 100vh; overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  body::after {
+    content: '';
+    position: fixed; inset: 0; z-index: 9999;
+    pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+    background-repeat: repeat;
+    background-size: 256px 256px;
+    opacity: 0.4;
+  }
+
+  .top-bar {
+    display: flex; align-items: center; gap: 16px;
+    padding: 16px 24px; border-bottom: 1px solid #1e1e22;
+  }
+  .top-bar a { color: #6e6d6a; text-decoration: none; font-size: 13px; transition: color 0.2s; }
+  .top-bar a:hover { color: #e8e6e3; }
+  .top-bar h1 { font-family: 'Instrument Serif', serif; font-weight: 400; font-size: 20px; flex: 1; }
+  .top-bar .status { font-size: 12px; color: #6e6d6a; }
+
+  .view-toggle {
+    display: flex; gap: 2px;
+    background: #1a1a1e; border-radius: 6px; padding: 2px;
+  }
+  .view-toggle button {
+    padding: 5px 14px; border-radius: 4px;
+    background: none; border: none;
+    color: #6e6d6a; font-size: 12px; font-family: inherit;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .view-toggle button:hover { color: #e8e6e3; }
+  .view-toggle button.active {
+    background: #2a2a2e; color: #e8e6e3;
+  }
+
+  .main { display: flex; height: calc(100vh - 57px - 56px); }
+
+  /* --- Left: vertical sliders --- */
+  .left-panel {
+    width: 460px; flex-shrink: 0;
+    display: flex; flex-direction: column;
+    border-right: 1px solid #1e1e22;
+    overflow-y: auto;
+  }
+
+  .sliders-section {
+    padding: 20px 16px 12px;
+    flex: 1;
+    display: flex; flex-direction: column;
+  }
+  .sliders-row {
+    display: flex; justify-content: space-evenly;
+    flex: 1; gap: 4px;
+  }
+
+  .vslider-col {
+    display: flex; flex-direction: column; align-items: center;
+    gap: 6px; flex: 1; min-width: 0;
+  }
+  .vslider-name {
+    font-size: 11px; font-weight: 500; color: #ccc;
+    text-align: center; line-height: 1.2;
+  }
+  .vslider-label-hi {
+    font-size: 9px; color: #5a5a58; text-transform: uppercase;
+    letter-spacing: 0.04em; text-align: center;
+  }
+  .vslider-label-lo {
+    font-size: 9px; color: #5a5a58; text-transform: uppercase;
+    letter-spacing: 0.04em; text-align: center;
+  }
+  .vslider-value {
+    font-size: 10px; color: #6e6d6a; font-variant-numeric: tabular-nums;
+  }
+
+  .vslider-track {
+    position: relative;
+    width: 32px; height: 180px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .vslider-track input[type="range"] {
+    width: 180px; height: 4px;
+    -webkit-appearance: none; appearance: none;
+    background: #2a2a2e; border-radius: 2px; outline: none;
+    transform: rotate(-90deg);
+    transform-origin: center center;
+  }
+  .vslider-track input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 18px; height: 18px; border-radius: 50%;
+    background: #c4704b; cursor: pointer;
+    box-shadow: 0 0 10px rgba(196, 112, 75, 0.35);
+  }
+  .vslider-track input[type="range"]::-moz-range-thumb {
+    width: 18px; height: 18px; border-radius: 50%;
+    background: #c4704b; cursor: pointer; border: none;
+    box-shadow: 0 0 10px rgba(196, 112, 75, 0.35);
+  }
+
+  /* Presets */
+  .presets-section {
+    padding: 12px 16px 16px;
+    border-top: 1px solid #1e1e22;
+  }
+  .presets-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: #6e6d6a; margin-bottom: 8px;
+  }
+  .presets-grid {
+    display: flex; flex-wrap: wrap; gap: 6px;
+  }
+  .preset-btn {
+    padding: 5px 12px; border-radius: 6px;
+    background: #1a1a1e; border: 1px solid #2a2a2e;
+    color: #aaa; font-size: 11px; font-family: inherit;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .preset-btn:hover { border-color: #c4704b; color: #e8e6e3; }
+  .preset-btn.active { border-color: #c4704b; background: rgba(196,112,75,0.1); color: #c4704b; }
+
+  /* --- Right: results --- */
+  .right-panel {
+    flex: 1; display: flex; flex-direction: column; overflow: hidden;
+  }
+  .results-header {
+    padding: 16px 24px; border-bottom: 1px solid #1e1e22;
+    font-size: 13px; color: #6e6d6a;
+  }
+  .results-header strong { color: #e8e6e3; font-weight: 500; }
+
+  .results-list { flex: 1; overflow-y: auto; padding: 4px 0; }
+
+  .result-row {
+    display: flex; align-items: center; gap: 14px;
+    padding: 10px 24px; cursor: pointer; transition: background 0.15s;
+  }
+  .result-row:hover { background: rgba(255,255,255,0.02); }
+  .result-row.playing { background: rgba(196, 112, 75, 0.08); }
+
+  .result-num {
+    width: 24px; text-align: right; font-size: 12px; color: #4a4a4a;
+    font-variant-numeric: tabular-nums; flex-shrink: 0;
+  }
+  .result-row.playing .result-num { color: #c4704b; }
+  .result-info { flex: 1; min-width: 0; }
+  .result-title {
+    font-size: 13px; font-weight: 400;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .result-meta {
+    font-size: 11px; color: #5a5a58; margin-top: 1px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .result-score {
+    flex-shrink: 0; width: 64px; height: 4px;
+    background: #1e1e22; border-radius: 2px; overflow: hidden;
+  }
+  .result-score-fill { height: 100%; background: #c4704b; border-radius: 2px; }
+  .result-pct {
+    flex-shrink: 0; width: 36px; text-align: right;
+    font-size: 11px; color: #5a5a58; font-variant-numeric: tabular-nums;
+  }
+  .result-detail {
+    font-size: 11px; color: #4a4a4a; flex-shrink: 0;
+  }
+  .results-empty {
+    padding: 60px 24px; text-align: center; color: #3a3a3a; font-size: 13px; line-height: 1.6;
+  }
+
+  /* --- Player --- */
+  .player-bar {
+    display: flex; align-items: center; gap: 12px;
+    height: 56px; padding: 0 24px;
+    border-top: 1px solid #1e1e22; background: #141416;
+  }
+  .player-btn {
+    background: none; border: none; cursor: pointer;
+    color: #888; padding: 4px; transition: color 0.15s;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .player-btn:hover { color: #e8e6e3; }
+  .player-btn svg { width: 20px; height: 20px; fill: currentColor; }
+  .player-btn.play-btn svg { width: 24px; height: 24px; }
+  .player-track-info { flex: 1; min-width: 0; }
+  .player-track-title {
+    font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .player-track-meta {
+    font-size: 11px; color: #5a5a58; margin-top: 1px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .player-seek {
+    flex: 1; max-width: 280px;
+    -webkit-appearance: none; appearance: none;
+    height: 3px; background: #2a2a2e; border-radius: 2px; outline: none;
+    cursor: pointer;
+  }
+  .player-seek::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 10px; height: 10px; border-radius: 50%;
+    background: #c4704b; cursor: pointer;
+  }
+  .player-time { font-size: 11px; color: #5a5a58; font-variant-numeric: tabular-nums; min-width: 80px; text-align: right; }
+  .player-idle { font-size: 12px; color: #4a4a4a; }
+
+  .results-list::-webkit-scrollbar, .left-panel::-webkit-scrollbar { width: 4px; }
+  .results-list::-webkit-scrollbar-track, .left-panel::-webkit-scrollbar-track { background: transparent; }
+  .results-list::-webkit-scrollbar-thumb, .left-panel::-webkit-scrollbar-thumb { background: #2a2a2e; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<div class="top-bar">
+  <a href="index.html">&larr; Prototypes</a>
+  <h1>Sonic Filter</h1>
+  <div class="view-toggle" id="view-toggle">
+    <button class="active" data-view="tracks">Tracks</button>
+    <button data-view="albums">Albums</button>
+    <button data-view="artists">Artists</button>
+  </div>
+  <span class="status" id="status">Loading...</span>
+</div>
+
+<div class="main">
+  <div class="left-panel">
+    <div class="sliders-section">
+      <div class="sliders-row" id="sliders"></div>
+    </div>
+
+    <div class="presets-section">
+      <div class="presets-label">Presets</div>
+      <div class="presets-grid" id="presets"></div>
+    </div>
+  </div>
+
+  <div class="right-panel">
+    <div class="results-header">
+      Matching: <strong id="match-count">0</strong>
+    </div>
+    <div class="results-list" id="results-list">
+      <div class="results-empty">Adjust sliders or pick a preset</div>
+    </div>
+  </div>
+</div>
+
+<div class="player-bar">
+  <button class="player-btn" id="prev-btn">
+    <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+  </button>
+  <button class="player-btn play-btn" id="play-btn">
+    <svg viewBox="0 0 24 24" id="play-icon"><path d="M8 5v14l11-7z"/></svg>
+  </button>
+  <button class="player-btn" id="next-btn">
+    <svg viewBox="0 0 24 24"><path d="M16 18h2V6h-2zM6 18l8.5-6L6 6z"/></svg>
+  </button>
+  <div class="player-track-info" id="player-info">
+    <span class="player-idle">Click a track to play</span>
+  </div>
+  <input type="range" class="player-seek" id="seek-bar" min="0" max="100" value="0">
+  <span class="player-time" id="player-time"></span>
+</div>
+
+<script>
+// --- Composite dimensions: Spotify-style human labels mapped to Soniq features ---
+const DIMENSIONS = [
+  {
+    id: 'energy',
+    name: 'Energy',
+    lo: 'Calm', hi: 'Intense',
+    features: [
+      { key: 'rms_mean', weight: 1.0, invert: false },
+      { key: 'onset_strength', weight: 0.8, invert: false },
+      { key: 'beat_strength', weight: 0.6, invert: false },
+      { key: 'dynamic_range', weight: 0.4, invert: false },
+    ]
+  },
+  {
+    id: 'acousticness',
+    name: 'Acousticness',
+    lo: 'Electronic', hi: 'Acoustic',
+    features: [
+      { key: 'flatness_mean', weight: 1.0, invert: true },
+      { key: 'centroid_mean', weight: 0.8, invert: true },
+      { key: 'zcr_mean', weight: 0.6, invert: true },
+    ]
+  },
+  {
+    id: 'danceability',
+    name: 'Danceability',
+    lo: 'Freeform', hi: 'Groovy',
+    features: [
+      { key: 'beat_strength', weight: 1.2, invert: false },
+      { key: 'tempo', weight: 0.6, invert: false },
+      { key: 'onset_strength', weight: 0.4, invert: false },
+    ]
+  },
+  {
+    id: 'valence',
+    name: 'Valence',
+    lo: 'Melancholic', hi: 'Uplifting',
+    features: [
+      { key: 'mode', weight: 1.0, invert: false },
+      { key: 'centroid_mean', weight: 0.6, invert: false },
+      { key: 'rms_mean', weight: 0.4, invert: false },
+    ]
+  },
+  {
+    id: 'instrumentalness',
+    name: 'Instrumental',
+    lo: 'Vocal', hi: 'Instrumental',
+    features: [
+      { key: 'vocal_proxy', weight: 1.0, invert: true },
+    ]
+  },
+  {
+    id: 'texture',
+    name: 'Texture',
+    lo: 'Clean', hi: 'Grainy',
+    features: [
+      { key: 'flatness_mean', weight: 1.0, invert: false },
+      { key: 'zcr_mean', weight: 0.8, invert: false },
+      { key: 'spectral_flux', weight: 0.6, invert: false },
+    ]
+  },
+  {
+    id: 'dynamics',
+    name: 'Dynamics',
+    lo: 'Compressed', hi: 'Cinematic',
+    features: [
+      { key: 'dynamic_range', weight: 1.2, invert: false },
+      { key: 'rms_variance', weight: 0.8, invert: false },
+      { key: 'rms_max', weight: 0.4, invert: false },
+    ]
+  },
+  {
+    id: 'stillness',
+    name: 'Stillness',
+    lo: 'Percussive', hi: 'Droning',
+    features: [
+      { key: 'onset_strength', weight: 1.0, invert: true },
+      { key: 'beat_strength', weight: 1.0, invert: true },
+      { key: 'spectral_flux', weight: 0.8, invert: true },
+      { key: 'duration', weight: 0.4, invert: false },
+    ]
+  },
+];
+
+const PRESETS = {
+  'Deep Drone': { energy: 15, acousticness: 50, danceability: 10, valence: 30, instrumentalness: 85, texture: 35, dynamics: 60, stillness: 95 },
+  'Dark Ambient': { energy: 20, acousticness: 45, danceability: 10, valence: 15, instrumentalness: 80, texture: 45, dynamics: 55, stillness: 85 },
+  'Textured Drone': { energy: 25, acousticness: 40, danceability: 10, valence: 25, instrumentalness: 85, texture: 80, dynamics: 65, stillness: 90 },
+  'Cinematic Swell': { energy: 40, acousticness: 55, danceability: 15, valence: 50, instrumentalness: 75, texture: 25, dynamics: 90, stillness: 70 },
+  'Chill Acoustic': { energy: 25, acousticness: 80, danceability: 30, valence: 50, instrumentalness: 60, texture: 15, dynamics: 40, stillness: 50 },
+  'High Energy': { energy: 85, acousticness: 30, danceability: 75, valence: 70, instrumentalness: 40, texture: 40, dynamics: 55, stillness: 10 },
+  'Dance Floor': { energy: 75, acousticness: 20, danceability: 90, valence: 75, instrumentalness: 50, texture: 30, dynamics: 45, stillness: 5 },
+  'Melancholic': { energy: 30, acousticness: 50, danceability: 20, valence: 15, instrumentalness: 55, texture: 20, dynamics: 50, stillness: 55 },
+  'Noisy & Raw': { energy: 60, acousticness: 25, danceability: 40, valence: 40, instrumentalness: 65, texture: 90, dynamics: 50, stillness: 40 },
+};
+
+let allTracks = [];
+let ranges = {};
+let sliderValues = {};
+let playlist = [];
+let currentIndex = -1;
+let updateDebounce = null;
+let currentView = 'tracks';
+
+// --- Init ---
+async function init() {
+  try {
+    const res = await fetch('/api/tracks?per_page=2000');
+    const data = await res.json();
+    allTracks = data.tracks || [];
+    computeRanges();
+    document.getElementById('status').textContent = `${allTracks.length} tracks`;
+    updateResults();
+  } catch (e) {
+    document.getElementById('status').textContent = 'Failed to load';
+  }
+}
+
+function computeRanges() {
+  const allFeatureKeys = new Set();
+  DIMENSIONS.forEach(d => d.features.forEach(f => allFeatureKeys.add(f.key)));
+  for (const key of allFeatureKeys) {
+    const vals = allTracks.map(t => t[key] ?? 0);
+    ranges[key] = [Math.min(...vals), Math.max(...vals)];
+  }
+}
+
+function normalize(val, key) {
+  const [min, max] = ranges[key] || [0, 1];
+  if (max === min) return 0.5;
+  return (val - min) / (max - min);
+}
+
+// --- Build vertical slider UI ---
+function buildSliders() {
+  const container = document.getElementById('sliders');
+  container.innerHTML = DIMENSIONS.map(d => {
+    sliderValues[d.id] = 50;
+    return `
+      <div class="vslider-col">
+        <div class="vslider-name">${d.name}</div>
+        <div class="vslider-label-hi">${d.hi}</div>
+        <div class="vslider-track">
+          <input type="range" id="slider-${d.id}" min="0" max="100" value="50" data-dim="${d.id}">
+        </div>
+        <div class="vslider-label-lo">${d.lo}</div>
+        <div class="vslider-value" id="val-${d.id}">50</div>
+      </div>
+    `;
+  }).join('');
+
+  container.querySelectorAll('input[type="range"]').forEach(el => {
+    el.addEventListener('input', () => {
+      const dim = el.dataset.dim;
+      sliderValues[dim] = parseInt(el.value);
+      document.getElementById(`val-${dim}`).textContent = el.value;
+      clearActivePreset();
+      debouncedUpdate();
+    });
+  });
+}
+
+function buildPresets() {
+  const container = document.getElementById('presets');
+  container.innerHTML = Object.keys(PRESETS).map(name =>
+    `<button class="preset-btn" data-preset="${name}">${name}</button>`
+  ).join('');
+
+  container.querySelectorAll('.preset-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const preset = PRESETS[btn.dataset.preset];
+      applyPreset(preset);
+      container.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    });
+  });
+}
+
+function applyPreset(values) {
+  for (const [dim, val] of Object.entries(values)) {
+    sliderValues[dim] = val;
+    const slider = document.getElementById(`slider-${dim}`);
+    if (slider) slider.value = val;
+    const label = document.getElementById(`val-${dim}`);
+    if (label) label.textContent = val;
+  }
+  updateResults();
+}
+
+function clearActivePreset() {
+  document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+}
+
+function debouncedUpdate() {
+  clearTimeout(updateDebounce);
+  updateDebounce = setTimeout(updateResults, 80);
+}
+
+// --- View toggle ---
+document.getElementById('view-toggle').querySelectorAll('button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.getElementById('view-toggle').querySelectorAll('button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentView = btn.dataset.view;
+    updateResults();
+  });
+});
+
+// --- Scoring ---
+const TOLERANCE = 0.25;
+
+function scoreDimension(track, dim) {
+  const target = sliderValues[dim.id] / 100;
+  let totalWeight = 0;
+  let totalDist = 0;
+  for (const f of dim.features) {
+    let norm = normalize(track[f.key] ?? 0, f.key);
+    if (f.invert) norm = 1 - norm;
+    totalDist += f.weight * Math.abs(norm - target);
+    totalWeight += f.weight;
+  }
+  return totalWeight ? totalDist / totalWeight : 0;
+}
+
+function passesFilter(track) {
+  for (const dim of DIMENSIONS) {
+    const target = sliderValues[dim.id] / 100;
+    for (const f of dim.features) {
+      let norm = normalize(track[f.key] ?? 0, f.key);
+      if (f.invert) norm = 1 - norm;
+      if (Math.abs(norm - target) > TOLERANCE) return false;
+    }
+  }
+  return true;
+}
+
+function getTimbreVec(track) {
+  const mfcc = track.mfcc_mean_json || [];
+  const mfccStd = track.mfcc_std_json || [];
+  const contrast = track.contrast_mean_json || [];
+  return [...mfcc, ...mfccStd, ...contrast];
+}
+
+function cosine(a, b) {
+  if (!a.length || a.length !== b.length) return 0;
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  na = Math.sqrt(na);
+  nb = Math.sqrt(nb);
+  return (na && nb) ? dot / (na * nb) : 0;
+}
+
+function computeSurvivors() {
+  let survivors = allTracks.filter(passesFilter);
+
+  // Widen tolerance progressively if too few results
+  let tol = TOLERANCE;
+  while (survivors.length < 10 && tol < 0.8) {
+    tol += 0.1;
+    survivors = allTracks.filter(track => {
+      for (const dim of DIMENSIONS) {
+        const target = sliderValues[dim.id] / 100;
+        for (const f of dim.features) {
+          let norm = normalize(track[f.key] ?? 0, f.key);
+          if (f.invert) norm = 1 - norm;
+          if (Math.abs(norm - target) > tol) return false;
+        }
+      }
+      return true;
+    });
+  }
+
+  // Compute slider distance for each survivor
+  survivors.forEach(t => {
+    let dist = 0, w = 0;
+    for (const dim of DIMENSIONS) {
+      const target = sliderValues[dim.id] / 100;
+      for (const f of dim.features) {
+        let norm = normalize(t[f.key] ?? 0, f.key);
+        if (f.invert) norm = 1 - norm;
+        dist += f.weight * (norm - target) ** 2;
+        w += f.weight;
+      }
+    }
+    t._sliderDist = Math.sqrt(dist / w);
+  });
+
+  survivors.sort((a, b) => a._sliderDist - b._sliderDist);
+
+  // Timbral centroid from top 3
+  const anchorVecs = survivors.slice(0, 3).map(getTimbreVec).filter(v => v.length > 0);
+  let centroid = null;
+  if (anchorVecs.length) {
+    centroid = anchorVecs[0].map((_, i) =>
+      anchorVecs.reduce((sum, v) => sum + (v[i] || 0), 0) / anchorVecs.length
+    );
+  }
+
+  // Rank by timbral similarity
+  for (const t of survivors) {
+    if (centroid) {
+      const tv = getTimbreVec(t);
+      t.score = tv.length ? cosine(tv, centroid) : 0;
+    } else {
+      t.score = 1 - t._sliderDist;
+    }
+  }
+
+  survivors.sort((a, b) => b.score - a.score);
+  return survivors;
+}
+
+function updateResults() {
+  if (!allTracks.length) return;
+
+  const survivors = computeSurvivors();
+
+  if (currentView === 'tracks') {
+    renderTracks(survivors);
+  } else if (currentView === 'albums') {
+    renderAlbums(survivors);
+  } else if (currentView === 'artists') {
+    renderArtists(survivors);
+  }
+}
+
+function renderTracks(survivors) {
+  playlist = survivors.slice(0, 50);
+  const maxScore = playlist[0]?.score || 1;
+
+  document.getElementById('match-count').textContent =
+    `${playlist.length} of ${survivors.length} tracks`;
+
+  const container = document.getElementById('results-list');
+  if (!playlist.length) {
+    container.innerHTML = '<div class="results-empty">No tracks match current filters</div>';
+    return;
+  }
+
+  container.innerHTML = playlist.map((t, i) => `
+    <div class="result-row${i === currentIndex ? ' playing' : ''}" data-idx="${i}">
+      <span class="result-num">${i + 1}</span>
+      <div class="result-info">
+        <div class="result-title">${esc(t.title)}</div>
+        <div class="result-meta">${esc(t.artist)} &middot; ${esc(t.album)}</div>
+      </div>
+      <div class="result-score">
+        <div class="result-score-fill" style="width: ${(t.score / maxScore * 100).toFixed(1)}%"></div>
+      </div>
+      <span class="result-pct">${(t.score * 100).toFixed(0)}%</span>
+    </div>
+  `).join('');
+
+  container.querySelectorAll('.result-row').forEach(row => {
+    row.addEventListener('click', () => playIndex(parseInt(row.dataset.idx)));
+  });
+}
+
+function renderAlbums(survivors) {
+  // Group by album
+  const albumMap = new Map();
+  for (const t of survivors) {
+    const key = `${t.artist}|||${t.album}`;
+    if (!albumMap.has(key)) {
+      albumMap.set(key, { artist: t.artist, album: t.album, tracks: [], totalScore: 0 });
+    }
+    const entry = albumMap.get(key);
+    entry.tracks.push(t);
+    entry.totalScore += t.score;
+  }
+
+  const albums = [...albumMap.values()].map(a => ({
+    ...a,
+    avgScore: a.totalScore / a.tracks.length,
+  }));
+  albums.sort((a, b) => b.avgScore - a.avgScore);
+  const top = albums.slice(0, 30);
+
+  // Build a flat playlist from album tracks for playback
+  playlist = [];
+  top.forEach(a => a.tracks.forEach(t => { if (playlist.length < 100) playlist.push(t); }));
+
+  const maxScore = top[0]?.avgScore || 1;
+
+  document.getElementById('match-count').textContent =
+    `${top.length} of ${albums.length} albums`;
+
+  const container = document.getElementById('results-list');
+  if (!top.length) {
+    container.innerHTML = '<div class="results-empty">No albums match current filters</div>';
+    return;
+  }
+
+  let playlistIdx = 0;
+  container.innerHTML = top.map((a, i) => {
+    const idx = playlistIdx;
+    playlistIdx += a.tracks.length;
+    return `
+      <div class="result-row" data-idx="${idx}">
+        <span class="result-num">${i + 1}</span>
+        <div class="result-info">
+          <div class="result-title">${esc(a.album)}</div>
+          <div class="result-meta">${esc(a.artist)} &middot; ${a.tracks.length} track${a.tracks.length !== 1 ? 's' : ''}</div>
+        </div>
+        <div class="result-score">
+          <div class="result-score-fill" style="width: ${(a.avgScore / maxScore * 100).toFixed(1)}%"></div>
+        </div>
+        <span class="result-pct">${(a.avgScore * 100).toFixed(0)}%</span>
+      </div>
+    `;
+  }).join('');
+
+  container.querySelectorAll('.result-row').forEach(row => {
+    row.addEventListener('click', () => playIndex(parseInt(row.dataset.idx)));
+  });
+}
+
+function renderArtists(survivors) {
+  // Group by artist
+  const artistMap = new Map();
+  for (const t of survivors) {
+    if (!artistMap.has(t.artist)) {
+      artistMap.set(t.artist, { artist: t.artist, tracks: [], albums: new Set(), totalScore: 0 });
+    }
+    const entry = artistMap.get(t.artist);
+    entry.tracks.push(t);
+    entry.albums.add(t.album);
+    entry.totalScore += t.score;
+  }
+
+  const artists = [...artistMap.values()].map(a => ({
+    ...a,
+    avgScore: a.totalScore / a.tracks.length,
+    albumCount: a.albums.size,
+  }));
+  artists.sort((a, b) => b.avgScore - a.avgScore);
+  const top = artists.slice(0, 30);
+
+  // Build flat playlist
+  playlist = [];
+  top.forEach(a => a.tracks.forEach(t => { if (playlist.length < 100) playlist.push(t); }));
+
+  const maxScore = top[0]?.avgScore || 1;
+
+  document.getElementById('match-count').textContent =
+    `${top.length} of ${artists.length} artists`;
+
+  const container = document.getElementById('results-list');
+  if (!top.length) {
+    container.innerHTML = '<div class="results-empty">No artists match current filters</div>';
+    return;
+  }
+
+  let playlistIdx = 0;
+  container.innerHTML = top.map((a, i) => {
+    const idx = playlistIdx;
+    playlistIdx += a.tracks.length;
+    return `
+      <div class="result-row" data-idx="${idx}">
+        <span class="result-num">${i + 1}</span>
+        <div class="result-info">
+          <div class="result-title">${esc(a.artist)}</div>
+          <div class="result-meta">${a.albumCount} album${a.albumCount !== 1 ? 's' : ''} &middot; ${a.tracks.length} track${a.tracks.length !== 1 ? 's' : ''}</div>
+        </div>
+        <div class="result-score">
+          <div class="result-score-fill" style="width: ${(a.avgScore / maxScore * 100).toFixed(1)}%"></div>
+        </div>
+        <span class="result-pct">${(a.avgScore * 100).toFixed(0)}%</span>
+      </div>
+    `;
+  }).join('');
+
+  container.querySelectorAll('.result-row').forEach(row => {
+    row.addEventListener('click', () => playIndex(parseInt(row.dataset.idx)));
+  });
+}
+
+// --- Audio ---
+const audio = new Audio();
+audio.addEventListener('ended', () => playIndex(currentIndex + 1));
+let seeking = false;
+const seekBar = document.getElementById('seek-bar');
+seekBar.addEventListener('mousedown', () => seeking = true);
+seekBar.addEventListener('touchstart', () => seeking = true);
+seekBar.addEventListener('change', () => {
+  if (audio.duration) audio.currentTime = (seekBar.value / 100) * audio.duration;
+  seeking = false;
+});
+
+audio.addEventListener('timeupdate', () => {
+  const el = document.getElementById('player-time');
+  if (!audio.duration) { el.textContent = ''; return; }
+  if (!seeking) seekBar.value = (audio.currentTime / audio.duration) * 100;
+  el.textContent = fmtTime(audio.currentTime) + ' / ' + fmtTime(audio.duration);
+});
+audio.addEventListener('play', updatePlayIcon);
+audio.addEventListener('pause', updatePlayIcon);
+
+function fmtTime(s) {
+  const m = Math.floor(s / 60);
+  return m + ':' + String(Math.floor(s % 60)).padStart(2, '0');
+}
+
+function updatePlayIcon() {
+  document.getElementById('play-icon').innerHTML = audio.paused
+    ? '<path d="M8 5v14l11-7z"/>'
+    : '<path d="M6 19h4V5H6zm8-14v14h4V5z"/>';
+}
+
+function playIndex(idx) {
+  if (!playlist.length) return;
+  if (idx < 0) idx = 0;
+  if (idx >= playlist.length) { audio.pause(); return; }
+  currentIndex = idx;
+  const t = playlist[idx];
+  audio.src = '/music/' + encodeURI(t.file);
+  audio.play();
+  document.getElementById('player-info').innerHTML =
+    `<div class="player-track-title">${esc(t.title)}</div>` +
+    `<div class="player-track-meta">${esc(t.artist)} &middot; ${esc(t.album)}</div>`;
+  document.querySelectorAll('.result-row').forEach((r, i) => r.classList.toggle('playing', i === idx));
+}
+
+document.getElementById('play-btn').addEventListener('click', () => {
+  if (!audio.src) { playIndex(0); return; }
+  audio.paused ? audio.play() : audio.pause();
+});
+document.getElementById('prev-btn').addEventListener('click', () => {
+  if (audio.currentTime > 3) { audio.currentTime = 0; return; }
+  playIndex(currentIndex - 1);
+});
+document.getElementById('next-btn').addEventListener('click', () => playIndex(currentIndex + 1));
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+buildSliders();
+buildPresets();
+init();
+</script>
+</body>
+</html>

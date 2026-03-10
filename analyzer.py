@@ -534,6 +534,226 @@ def find_similar(track_id, music_root, limit=10):
 
 
 # ---------------------------------------------------------------------------
+# Artist similarity
+# ---------------------------------------------------------------------------
+
+def _compute_top_features(profile_vec, ranges):
+    """Compute composite features from a normalized profile vector.
+
+    Expects profile_vec indexed by PROFILE_FEATURES order:
+      0:tempo, 1:rms_mean, 2:dynamic_range, 3:centroid_mean,
+      4:flatness_mean, 5:spectral_flux, 6:onset_strength,
+      7:beat_strength, 8:rms_variance, 9:vocal_proxy
+    """
+    tempo_n = profile_vec[0]
+    rms_n = profile_vec[1]
+    dyn_range_n = profile_vec[2]
+    centroid_n = profile_vec[3]
+    flatness_n = profile_vec[4]
+    flux_n = profile_vec[5]
+    onset_n = profile_vec[6]
+    beat_n = profile_vec[7]
+    rms_var_n = profile_vec[8]
+    vocal_n = profile_vec[9]
+
+    # Stillness: inverse of rhythmic activity, higher = more drone-like
+    stillness_raw = ((1 - onset_n) * 1.0 + (1 - beat_n) * 1.0
+                     + (1 - flux_n) * 0.8) / 2.8
+
+    return {
+        "energy": round(rms_n, 4),
+        "acousticness": round(max(0, 1 - flatness_n - centroid_n), 4),
+        "danceability": round(beat_n * 0.5 + tempo_n * 0.3 + onset_n * 0.2, 4),
+        "valence": round(centroid_n * 0.3, 4),  # partial — tonnetz added when available
+        "instrumentalness": round(max(0, 1 - vocal_n), 4),
+        "texture": round((flatness_n * 1.0 + flux_n * 0.6) / 1.6, 4),
+        "dynamics": round((dyn_range_n * 1.2 + rms_var_n * 0.8) / 2.0, 4),
+        "stillness": round(min(1.0, stillness_raw), 4),
+    }
+
+
+def _build_artist_data(music_root):
+    """Load all tracks, build 61-dim vectors, aggregate per artist.
+
+    Returns (artist_data, vec_stats, ranges) where artist_data is:
+      {artist: {"vecs": [vec, ...], "albums": set, "rows": [row, ...]}}
+    """
+    import json as _json
+
+    conn = _connect(music_root)
+    ranges = get_norm_ranges(conn)
+    all_rows = conn.execute("SELECT * FROM tracks").fetchall()
+    conn.close()
+
+    if not all_rows:
+        return {}, None, ranges
+
+    # Compute library-wide mean/std for vector features (same as find_similar)
+    vec_collectors = {
+        "mfcc_mean_json": ([], 13),
+        "mfcc_std_json": ([], 13),
+        "contrast_mean_json": ([], 7),
+        "chroma_mean_json": ([], 12),
+        "tonnetz_mean_json": ([], 6),
+    }
+    for row in all_rows:
+        for col, (collector, _) in vec_collectors.items():
+            v = _json.loads(row[col]) if isinstance(row[col], str) else row[col]
+            if v:
+                collector.append(v)
+
+    def _stats(arrays, dims):
+        if not arrays:
+            return [0] * dims, [1] * dims
+        means = [sum(a[i] for a in arrays) / len(arrays) for i in range(dims)]
+        stds = [max((sum((a[i] - means[i])**2 for a in arrays) / len(arrays))**0.5, 1e-6)
+                for i in range(dims)]
+        return means, stds
+
+    vec_stats = {}
+    for col, (collector, dims) in vec_collectors.items():
+        vec_stats[col] = _stats(collector, dims)
+
+    def _full_vec(row):
+        vec = []
+        for f in PROFILE_FEATURES:
+            r = ranges.get(f, [0, 0])
+            lo, hi = r[0], r[1]
+            val = row[f] if row[f] is not None else 0
+            vec.append((val - lo) / (hi - lo) if hi > lo else 0.5)
+        for col, (_, dims) in vec_collectors.items():
+            v = _json.loads(row[col]) if isinstance(row[col], str) else row[col]
+            v = v or [0] * dims
+            means, stds = vec_stats[col]
+            vec.extend((v[i] - means[i]) / stds[i] for i in range(dims))
+        return vec
+
+    # Group by artist
+    artist_data = {}
+    for row in all_rows:
+        a = row["artist"]
+        if a not in artist_data:
+            artist_data[a] = {"vecs": [], "albums": set(), "rows": []}
+        artist_data[a]["vecs"].append(_full_vec(row))
+        artist_data[a]["albums"].add(row["album"])
+        artist_data[a]["rows"].append(row)
+
+    return artist_data, vec_stats, ranges
+
+
+def _avg_vec(vecs):
+    """Element-wise average of a list of vectors."""
+    n = len(vecs)
+    dims = len(vecs[0])
+    return [sum(v[i] for v in vecs) / n for i in range(dims)]
+
+
+def _artist_top_features(avg_profile_vec, avg_tonnetz, ranges):
+    """Compute Spotify-style features for an artist, including tonnetz for valence."""
+    feats = _compute_top_features(avg_profile_vec, ranges)
+
+    # Enhance valence with tonnetz brightness if available
+    if avg_tonnetz and len(avg_tonnetz) == 6:
+        tonnetz_brightness = min(1.0, (abs(avg_tonnetz[0]) + abs(avg_tonnetz[1])
+                                       + abs(avg_tonnetz[4]) + abs(avg_tonnetz[5])) / 4.0 * 5)
+    else:
+        tonnetz_brightness = 0.5
+
+    # mode_norm not available at artist level — use 0.5 as neutral
+    mode_norm = 0.5
+    centroid_n = avg_profile_vec[3]
+    feats["valence"] = round(mode_norm * 0.4 + tonnetz_brightness * 0.3 + centroid_n * 0.3, 4)
+    return feats
+
+
+def _avg_tonnetz(rows):
+    """Average tonnetz vectors across rows."""
+    import json as _json
+    tonnetz_vals = []
+    for row in rows:
+        t = _json.loads(row["tonnetz_mean_json"]) if row["tonnetz_mean_json"] else None
+        if t and len(t) == 6:
+            tonnetz_vals.append(t)
+    if not tonnetz_vals:
+        return None
+    n = len(tonnetz_vals)
+    return [sum(v[i] for v in tonnetz_vals) / n for i in range(6)]
+
+
+def find_similar_artists(artist, music_root, limit=10):
+    """Find artists most similar to the given one.
+
+    Builds 61-dim normalized vectors (same as find_similar), averages per artist,
+    then ranks by cosine similarity — better suited for averaged vectors than
+    Euclidean distance.
+
+    Returns list of dicts sorted by similarity desc.
+    """
+    artist_data, vec_stats, ranges = _build_artist_data(music_root)
+
+    if not artist_data or artist not in artist_data:
+        return []
+
+    # Compute average vector per artist
+    artist_vecs = {}
+    for a, data in artist_data.items():
+        artist_vecs[a] = _avg_vec(data["vecs"])
+
+    target_vec = artist_vecs[artist]
+
+    results = []
+    for a, avg in artist_vecs.items():
+        if a == artist:
+            continue
+        sim = _cosine(target_vec, avg)
+        # Cosine can be negative for z-scored features; clamp to 0-1
+        sim = max(0.0, min(1.0, sim))
+
+        data = artist_data[a]
+        avg_profile = avg[:len(PROFILE_FEATURES)]
+        tonnetz = _avg_tonnetz(data["rows"])
+
+        results.append({
+            "artist": a,
+            "similarity": round(sim, 4),
+            "track_count": len(data["vecs"]),
+            "albums": sorted(data["albums"]),
+            "top_features": _artist_top_features(avg_profile, tonnetz, ranges),
+        })
+
+    results.sort(key=lambda x: x["similarity"], reverse=True)
+    return results[:limit]
+
+
+def get_artists_overview(music_root):
+    """Return all artists with track counts, albums, and Spotify-style features.
+
+    Reuses the same 61-dim vector building and feature computation as
+    find_similar_artists, but returns data for every artist.
+    """
+    artist_data, vec_stats, ranges = _build_artist_data(music_root)
+
+    if not artist_data:
+        return []
+
+    results = []
+    for a, data in artist_data.items():
+        avg = _avg_vec(data["vecs"])
+        avg_profile = avg[:len(PROFILE_FEATURES)]
+        tonnetz = _avg_tonnetz(data["rows"])
+
+        results.append({
+            "artist": a,
+            "track_count": len(data["vecs"]),
+            "albums": sorted(data["albums"]),
+            "top_features": _artist_top_features(avg_profile, tonnetz, ranges),
+        })
+
+    results.sort(key=lambda x: x["artist"].lower())
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Key / Harmony search
 # ---------------------------------------------------------------------------
 

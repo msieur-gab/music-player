@@ -174,3 +174,143 @@ When you click "find similar" on a track, it builds a **61-dimension vector** co
 All components are normalized to the same scale so no single group dominates. Tracks are ranked by inverse Euclidean distance — the seed track scores 1.0, and the closest matches appear next.
 
 This means "find similar" considers **everything**: rhythm, loudness, brightness, timbre, texture, harmonic content, and tonal relationships — not just one dimension.
+
+### Composite Dimensions (Sonic Filter & Sonic Radar)
+
+Eight human-friendly dimensions derived from the raw Soniq features. These power the
+Sonic Filter sliders and the Sonic Radar artist profiles. Each composite combines
+multiple raw features with weights — this is the "consumer layer" on top of the
+raw extraction, similar to how Spotify exposes Energy/Danceability/etc. but we go
+further with Texture, Dynamics, and Stillness (which Spotify doesn't have).
+
+**Feature → Composite mapping:**
+
+Every raw scalar feature is used in at least one composite (except `key`, which is
+categorical and used in the 61-dim similarity vector instead). Features can appear
+in multiple composites — e.g. `onset_strength` contributes to Energy, Danceability,
+and Stillness (inverted). The `invert` column means "high raw value → low composite
+value" — for example, high `onset_strength` means low Stillness.
+
+| Soniq Feature    | Energy | Acousticness | Danceability | Valence | Instrumental | Texture | Dynamics | Stillness |
+|------------------|--------|--------------|--------------|---------|--------------|---------|----------|-----------|
+| `tempo`          |        |              | 0.6          |         |              |         |          |           |
+| `rms_mean`       | 1.0    |              |              | 0.4     |              |         |          |           |
+| `rms_max`        |        |              |              |         |              |         | 0.4      |           |
+| `rms_variance`   |        |              |              |         |              |         | 0.8      |           |
+| `dynamic_range`  | 0.4    |              |              |         |              |         | 1.2      |           |
+| `centroid_mean`  |        | 0.8 inv      |              | 0.6     |              |         |          |           |
+| `flatness_mean`  |        | 1.0 inv      |              |         |              | 1.0     |          |           |
+| `spectral_flux`  |        |              |              |         |              | 0.6     |          | 0.8 inv   |
+| `onset_strength` | 0.8    |              | 0.4          |         |              |         |          | 1.0 inv   |
+| `beat_strength`  | 0.6    |              | 1.2          |         |              |         |          | 1.0 inv   |
+| `vocal_proxy`    |        |              |              |         | 1.0 inv      |         |          |           |
+| `zcr_mean`       |        | 0.6 inv      |              |         |              | 0.8     |          |           |
+| `duration`       |        |              |              |         |              |         |          | 0.4       |
+| `key`            | —      | —            | —            | —       | —            | —       | —        | —         |
+| `mode`           |        |              |              | 1.0     |              |         |          |           |
+
+- Numbers = weight in the composite formula (higher = more influence)
+- `inv` = inverted (raw high → composite low)
+- `—` = not used in composites (`key` is categorical, used in 61-dim similarity vector only)
+- `mode` contributes to Valence: major (1) = uplifting, minor (0) = melancholic
+- Valence also uses `tonnetz_mean` brightness at the backend level (not shown — vector feature)
+
+**Composite formulas:**
+
+```
+Energy       = rms_mean×1.0 + onset×0.8 + beat×0.6 + dyn_range×0.4
+Acousticness = (1-flatness)×1.0 + (1-centroid)×0.8 + (1-zcr)×0.6
+Danceability = beat×1.2 + tempo×0.6 + onset×0.4
+Valence      = mode×1.0 + centroid×0.6 + rms_mean×0.4 (+ tonnetz brightness×0.3 backend)
+Instrumental = (1-vocal_proxy)×1.0
+Texture      = flatness×1.0 + zcr×0.8 + flux×0.6
+Dynamics     = dyn_range×1.2 + rms_variance×0.8 + rms_max×0.4
+Stillness    = (1-onset)×1.0 + (1-beat)×1.0 + (1-flux)×0.8 + duration×0.4
+```
+
+All raw features are min-max normalized to 0–1 before weighting. Each composite
+is then divided by its total weight sum to produce a 0–1 output.
+
+**Presets for drone discovery:**
+
+| Preset         | Energy | Acou. | Dance. | Valence | Instr. | Texture | Dynamics | Stillness |
+|----------------|--------|-------|--------|---------|--------|---------|----------|-----------|
+| Deep Drone     | 15     | 50    | 10     | 30      | 85     | 35      | 60       | 95        |
+| Dark Ambient   | 20     | 45    | 10     | 15      | 80     | 45      | 55       | 85        |
+| Textured Drone | 25     | 40    | 10     | 25      | 85     | 80      | 65       | 90        |
+| Cinematic Swell| 40     | 55    | 15     | 50      | 75     | 25      | 90       | 70        |
+
+---
+
+## Future: Genre Enrichment via MusicBrainz
+
+### The problem
+
+When a library is sonically homogeneous (e.g. mostly jazz/downtempo/nu jazz), cosine
+similarity scores between artists cluster around 0.99+ — the system detects real
+differences but they're subtle gradients, not clear separations. Adding genre metadata
+from an external source would help validate and contextualize sonic similarity.
+
+### MusicBrainz as a genre source
+
+MusicBrainz provides free, community-curated genre/tag data for artists via their API.
+No API key required — just a `User-Agent` header and rate limiting (1 request/second).
+
+**API endpoint:**
+```
+GET https://musicbrainz.org/ws/2/artist/?query=artist:{name}&fmt=json&limit=1
+Header: User-Agent: Soniq/0.1 (music-player research)
+```
+
+**Response includes:**
+- `tags[]` — genre tags with community vote counts (higher = more confident)
+- `country` — artist origin (ISO country code)
+- `id` — MusicBrainz UUID for deeper lookups
+
+**For collaboration entries** (e.g. "Ballaké Sissoko, Vincent Segal"), query the
+first artist name only — MusicBrainz doesn't index collaboration strings.
+
+### How it could be used
+
+1. **Sphere labels** — show genre tags alongside artist names in Sonic Sphere/Mix
+   to visually validate whether sonic proximity matches genre proximity
+2. **Genre-aware similarity** — blend MusicBrainz genre overlap into the similarity
+   score (e.g. 70% audio features + 30% genre tag overlap) to break ties when
+   cosine similarity is very close
+3. **Library diversity dashboard** — aggregate genre distribution to show how
+   diverse or concentrated a collection is
+4. **Cross-genre discovery** — when generating mixes, flag tracks from different
+   genres that still match sonically — these are the most interesting discoveries
+
+### Library genre snapshot (March 2025, 33 artists)
+
+```
+jazz                     22 artists  ██████████████████████
+downtempo                13          █████████████
+nu jazz                  13          █████████████
+contemporary jazz         7          ███████
+acid jazz                 7          ███████
+post-rock                 6          ██████
+electronic                6          ██████
+ambient                   5          █████
+jazz fusion               5          █████
+trip hop                  4          ████
+electronica               4          ████
+acoustic                  4          ████
+instrumental hip hop      3          ███
+instrumental              3          ███
+spiritual jazz            2          ██
+bossa nova                2          ██
+funk                      2          ██
+```
+
+The concentration is clear — adding artists from underrepresented genres
+(afrobeat, house, classical, hip hop, metal) would stress-test the feature
+space and reveal whether sonic similarity holds across genre boundaries.
+
+### Implementation notes
+
+- Cache MusicBrainz responses to avoid repeated lookups (store in DB or JSON file)
+- Respect rate limit: 1 request/second, batch on first run
+- Filter tags with `count < 0` (community downvotes = incorrect tags)
+- Consider storing top 5 tags per artist in the Soniq tag or a sidecar file

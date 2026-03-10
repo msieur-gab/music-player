@@ -40,7 +40,8 @@ from downloader import bootstrap, download_playlist
 from cast_manager import CastManager
 from db import _connect
 from analyzer import (
-    analyze_library, find_similar, get_zones, generate_playlist,
+    analyze_library, find_similar, find_similar_artists, get_artists_overview,
+    get_zones, generate_playlist,
     migrate_from_json, find_by_harmony, get_mood_clusters, find_transitions,
 )
 from playlist_manager import save_playlist, list_playlists, get_playlist, delete_playlist
@@ -308,6 +309,16 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json({"error": "Missing key param"}, 400)
             else:
                 self._json(find_similar(key, MUSIC_ROOT, limit))
+        elif path == '/api/artists/similar':
+            qs = parse_qs(urlparse(self.path).query)
+            artist = qs.get('artist', [''])[0]
+            limit = int(qs.get('limit', ['10'])[0])
+            if not artist:
+                self._json({"error": "Missing artist param"}, 400)
+            else:
+                self._json(find_similar_artists(artist, MUSIC_ROOT, limit))
+        elif path == '/api/artists':
+            self._json(get_artists_overview(MUSIC_ROOT))
         elif path == '/api/harmony':
             qs = parse_qs(urlparse(self.path).query)
             key = qs.get('key', [''])[0]
