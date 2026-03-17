@@ -1,8 +1,7 @@
-#!/usr/bin/env python3
-"""
-YouTube Music playlist downloader.
-Self-bootstrapping: installs yt-dlp and ffmpeg if missing.
-Downloads as native m4a (AAC) with MP4 tags + cover art.
+"""YouTube Music playlist downloader — core logic.
+
+Downloads playlists as native m4a (AAC) with MP4 tags + cover art.
+Used by the downloader addon and available as a standalone CLI.
 """
 
 import subprocess
@@ -14,38 +13,6 @@ import re
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-MUSIC_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "music")
-
-
-# ---------------------------------------------------------------------------
-# Dependency bootstrap
-# ---------------------------------------------------------------------------
-
-VENV_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv")
-
-
-def _ensure_venv():
-    """Create a project-local venv if we're not already running inside it."""
-    venv_python = os.path.join(VENV_DIR, "bin", "python3")
-
-    # Already inside the venv
-    if sys.prefix != sys.base_prefix:
-        return
-
-    if not os.path.isfile(venv_python):
-        print("[bootstrap] Creating virtual environment...")
-        # Make sure python3-venv is available
-        if shutil.which("apt-get"):
-            subprocess.run(
-                ["sudo", "apt-get", "install", "-y", "-qq", "python3-venv"],
-                check=False
-            )
-        subprocess.check_call([sys.executable, "-m", "venv", VENV_DIR])
-
-    # Re-exec the current script inside the venv
-    print("[bootstrap] Switching to venv...")
-    os.execv(venv_python, [venv_python] + sys.argv)
-
 
 def _pip_install(package):
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", package])
@@ -55,14 +22,14 @@ def _ensure_yt_dlp():
     try:
         import yt_dlp  # noqa: F401
     except ImportError:
-        print("[bootstrap] Installing yt-dlp...")
+        print("[downloader] Installing yt-dlp...")
         _pip_install("yt-dlp")
 
 
 def _ensure_ffmpeg():
     if shutil.which("ffmpeg"):
         return
-    print("[bootstrap] ffmpeg not found, attempting install...")
+    print("[downloader] ffmpeg not found, attempting install...")
     if shutil.which("apt-get"):
         subprocess.run(["sudo", "apt-get", "update", "-qq"], check=False)
         subprocess.run(["sudo", "apt-get", "install", "-y", "-qq", "ffmpeg"], check=True)
@@ -73,7 +40,7 @@ def _ensure_ffmpeg():
         local_bin = os.path.expanduser("~/.local/bin")
         os.makedirs(local_bin, exist_ok=True)
         archive = "/tmp/ffmpeg-static.tar.xz"
-        print(f"[bootstrap] Downloading static ffmpeg...")
+        print(f"[downloader] Downloading static ffmpeg...")
         urllib.request.urlretrieve(url, archive)
         subprocess.run(
             f"tar -xf {archive} -C /tmp && cp /tmp/ffmpeg-*-static/ffmpeg /tmp/ffmpeg-*-static/ffprobe {local_bin}/",
@@ -84,28 +51,10 @@ def _ensure_ffmpeg():
         raise RuntimeError("Could not install ffmpeg. Please install it manually.")
 
 
-def _ensure_mutagen():
-    try:
-        import mutagen  # noqa: F401
-    except ImportError:
-        print("[bootstrap] Installing mutagen...")
-        _pip_install("mutagen")
-
-
-def _ensure_pychromecast():
-    try:
-        import pychromecast  # noqa: F401
-    except ImportError:
-        print("[bootstrap] Installing pychromecast...")
-        _pip_install("pychromecast")
-
-
-def bootstrap():
-    _ensure_venv()  # creates venv + re-execs into it if needed
+def install_deps():
+    """Install downloader-specific dependencies (yt-dlp)."""
     _ensure_yt_dlp()
     _ensure_ffmpeg()
-    _ensure_mutagen()
-    _ensure_pychromecast()
 
 
 # ---------------------------------------------------------------------------
@@ -166,12 +115,11 @@ def _write_tags(filepath, meta):
 # ---------------------------------------------------------------------------
 
 def download_playlist(url, music_root=None, on_progress=None):
-    """
-    Download a YouTube Music playlist.
+    """Download a YouTube Music playlist.
 
     Args:
         url: YouTube Music playlist URL
-        music_root: destination root folder (default: ./music)
+        music_root: destination root folder
         on_progress: callback(dict) for progress updates
 
     Returns:
@@ -179,7 +127,8 @@ def download_playlist(url, music_root=None, on_progress=None):
     """
     import yt_dlp
 
-    music_root = music_root or MUSIC_ROOT
+    if not music_root:
+        music_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "music")
 
     def _notify(msg, **extra):
         info = {"message": msg, **extra}
@@ -208,7 +157,6 @@ def download_playlist(url, music_root=None, on_progress=None):
     if not entries:
         raise ValueError("Playlist is empty or unavailable")
 
-    # Resolve album/artist — prefer entry-level metadata (more reliable)
     first = entries[0] or {}
     album = (
         first.get("album")
@@ -224,7 +172,6 @@ def download_playlist(url, music_root=None, on_progress=None):
         or first.get("channel")
         or "Unknown Artist"
     )
-    # Clean up "- Topic" suffix YouTube adds
     artist = re.sub(r'\s*-\s*Topic$', '', artist)
 
     genre = first.get("genre", "")
@@ -244,7 +191,6 @@ def download_playlist(url, music_root=None, on_progress=None):
 
     # ---- Step 2: Download cover art ----
     cover_path = None
-    # Collect candidate thumbnail URLs: playlist first (square album art), then first track
     thumb_candidates = []
     for source in [info, first]:
         for t in reversed(source.get("thumbnails", [])):
@@ -282,7 +228,7 @@ def download_playlist(url, music_root=None, on_progress=None):
         _notify("Cover art: no usable thumbnail found")
 
     # ---- Step 3: Download tracks in parallel ----
-    tracks_result = {}  # idx → filename
+    tracks_result = {}
 
     def _download_track(idx, entry):
         track_num = str(idx).zfill(2)
@@ -382,10 +328,7 @@ def download_playlist(url, music_root=None, on_progress=None):
             if filename:
                 tracks_result[idx] = filename
 
-    # Collect tracks in order
     tracks = [tracks_result[i] for i in sorted(tracks_result)]
-
-    # Keep cover.jpg in the album folder for the player UI
 
     result = {
         "artist": artist,
@@ -408,6 +351,6 @@ if __name__ == "__main__":
         print(f"Usage: {sys.argv[0]} <youtube-music-playlist-url>")
         sys.exit(1)
 
-    bootstrap()
+    install_deps()
     result = download_playlist(sys.argv[1])
     print(json.dumps(result, indent=2))

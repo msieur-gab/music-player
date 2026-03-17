@@ -1,14 +1,14 @@
 import { fetchLibrary, fetchDevices, fetchStatus, castTrack, controlPlayback, fetchPlaylist, fetchZones, fetchSavedPlaylist, savePlaylistApi, deleteSavedPlaylist, fetchSimilar } from '../services/api.js';
 import { recordPlay } from '../services/stats.js';
+import { loadAddons } from '../services/addons.js';
 import './nav-rail.js';
 import './home-view.js';
 import './album-grid.js';
 import './album-detail.js';
 import './playlist-list.js';
 import './now-playing.js';
-import './device-picker.js';
-import './download-panel.js';
 import './settings-panel.js';
+import './addon-manager.js';
 
 const tpl = document.createElement('template');
 tpl.innerHTML = `
@@ -110,9 +110,9 @@ album-detail {
 <album-detail id="detail"></album-detail>
 
 <now-playing id="player"></now-playing>
-<download-panel id="downloader"></download-panel>
-<device-picker id="devices"></device-picker>
+<span id="addon-container"></span>
 <settings-panel id="settings"></settings-panel>
+<addon-manager id="addon-manager"></addon-manager>
 `;
 
 class MusicApp extends HTMLElement {
@@ -151,9 +151,13 @@ class MusicApp extends HTMLElement {
 
     $('rail').addEventListener('rail-action', (e) => {
       switch (e.detail.action) {
-        case 'download': this._toggleDownload(); break;
+        case 'addons': this._openAddonManager(); break;
         case 'settings': this._openSettings(); break;
         case 'theme': this._toggleTheme(); break;
+        default:
+          // Addon action — toggle the addon's component
+          this._toggleAddon(e.detail.action);
+          break;
       }
     });
 
@@ -241,34 +245,29 @@ class MusicApp extends HTMLElement {
       this._navigateToAlbum(e.detail.artist, e.detail.album);
     });
 
-    // ── Device picker ──
-    $('player').addEventListener('toggle-devices', async () => {
-      const devices = await fetchDevices();
-      $('devices').devices = devices;
-      $('devices').setAttribute('open', '');
+    // ── Device picker (chromecast addon) ──
+    $('player').addEventListener('toggle-devices', () => {
+      const picker = this.shadowRoot.querySelector('device-picker');
+      if (picker) {
+        picker.setAttribute('open', '');
+      }
     });
 
-    $('devices').addEventListener('device-select', async (e) => {
-      if (e.detail.id === 'local') {
-        if (this._mode === 'cast') controlPlayback('stop');
-        this._selectedDevice = null;
-        this._mode = 'local';
-        if (this._queueIndex >= 0 && this._queue.length) this._playLocal();
-        return;
-      }
+    // Listen for device-select from addon (bubbles through shadow DOM)
+    this.shadowRoot.addEventListener('device-select', (e) => this._onDeviceSelect(e));
 
-      this._selectedDevice = e.detail;
-      this._mode = 'cast';
-      await this._fetchServerIp();
-      if (this._queueIndex >= 0 && this._queue.length) {
-        const ok = await this._castQueue(this._queue, this._queueIndex);
-        if (ok) {
-          this._audio.pause();
-        } else {
-          this._mode = 'local';
-          this._playLocal();
-        }
-      }
+    // ── Download addon events (bubbles through shadow DOM) ──
+    this.shadowRoot.addEventListener('download-complete', () => {
+      this._loadLibrary();
+    });
+
+    this.shadowRoot.addEventListener('download-activity', (e) => {
+      $('rail').setAddonBadge('downloader', e.detail.active);
+    });
+
+    // ── Addon manager — reload addon UI after install ──
+    this.shadowRoot.addEventListener('addon-installed', () => {
+      this._loadAddons();
     });
 
     // ── Settings events ──
@@ -284,15 +283,6 @@ class MusicApp extends HTMLElement {
       this._castBaseUrl = null;
     });
 
-    // ── Download events ──
-    $('downloader').addEventListener('download-complete', () => {
-      this._loadLibrary();
-    });
-
-    $('downloader').addEventListener('download-activity', (e) => {
-      $('rail').downloadActive = e.detail.active;
-    });
-
     // Restore theme
     const savedTheme = localStorage.getItem('musicast-theme');
     if (savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
@@ -304,7 +294,8 @@ class MusicApp extends HTMLElement {
     // Media Session (lock screen / notification controls)
     this._setupMediaSession();
 
-    // Load library and start UI update loop
+    // Load addons, library, and start UI update loop
+    this._loadAddons();
     this._loadLibrary();
     this._startUpdateLoop();
   }
@@ -353,14 +344,59 @@ class MusicApp extends HTMLElement {
 
   // ── Actions ──
 
-  _toggleDownload() {
-    const $ = id => this.shadowRoot.getElementById(id);
-    const dl = $('downloader');
-    if (dl.hasAttribute('open')) {
-      dl.removeAttribute('open');
+  _toggleAddon(addonId) {
+    const el = this.shadowRoot.getElementById(`addon-${addonId}`);
+    if (!el) return;
+    if (el.hasAttribute('open')) {
+      el.removeAttribute('open');
     } else {
-      dl.setAttribute('open', '');
+      el.setAttribute('open', '');
     }
+  }
+
+  async _onDeviceSelect(e) {
+    if (e.detail.id === 'local') {
+      if (this._mode === 'cast') controlPlayback('stop');
+      this._selectedDevice = null;
+      this._mode = 'local';
+      if (this._queueIndex >= 0 && this._queue.length) this._playLocal();
+      return;
+    }
+
+    this._selectedDevice = e.detail;
+    this._mode = 'cast';
+    await this._fetchServerIp();
+    if (this._queueIndex >= 0 && this._queue.length) {
+      const ok = await this._castQueue(this._queue, this._queueIndex);
+      if (ok) {
+        this._audio.pause();
+      } else {
+        this._mode = 'local';
+        this._playLocal();
+      }
+    }
+  }
+
+  async _loadAddons() {
+    const addons = await loadAddons();
+    const container = this.shadowRoot.getElementById('addon-container');
+    const rail = this.shadowRoot.getElementById('rail');
+
+    for (const addon of addons) {
+      // Create the component element
+      const el = document.createElement(addon.component);
+      el.id = `addon-${addon.id}`;
+      container.appendChild(el);
+
+      // Add trigger button to nav-rail (if slot is 'rail')
+      if (addon.trigger && addon.trigger.slot === 'rail') {
+        rail.addAddonButton(addon.id, addon.trigger);
+      }
+    }
+  }
+
+  _openAddonManager() {
+    this.shadowRoot.getElementById('addon-manager').setAttribute('open', '');
   }
 
   _openSettings() {

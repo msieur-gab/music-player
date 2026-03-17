@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-MusiCast server — music file server, Chromecast caster, YouTube Music downloader.
+MusiCast server — music file server with addon-based extensibility.
 Drop into a Linux environment, run `python3 server.py`, done.
+
+Core: library scanning, audio analysis, playlists, similarity, moods.
+Addons: chromecast, downloader, and future frontend views.
 """
 
 import os
@@ -10,14 +13,18 @@ import json
 import uuid
 import socket
 import mimetypes
+import importlib
+import importlib.util
 import subprocess
 import threading
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, unquote, parse_qs, quote
 
-# Auto-install audio analysis dependencies into a local venv
-import importlib.util
+# ---------------------------------------------------------------------------
+# Venv bootstrap — ensure we run inside the project venv
+# ---------------------------------------------------------------------------
+
 _VENV_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv")
 _VENV_PY = os.path.join(_VENV_DIR, "bin", "python3")
 
@@ -25,19 +32,17 @@ if not os.path.isdir(_VENV_DIR):
     print("Creating virtual environment...")
     subprocess.check_call([sys.executable, "-m", "venv", _VENV_DIR])
 
-# Re-exec inside the venv if we're not already in it
 if os.path.abspath(sys.executable) != os.path.abspath(_VENV_PY):
     os.execv(_VENV_PY, [_VENV_PY] + sys.argv)
 
-_REQUIRED = ["numpy", "librosa"]
+# Core dependencies (numpy, librosa for analysis; mutagen for tags)
+_REQUIRED = ["numpy", "librosa", "mutagen"]
 _missing = [p for p in _REQUIRED if not importlib.util.find_spec(p)]
 if _missing:
-    print(f"Installing missing dependencies: {', '.join(_missing)}")
+    print(f"Installing core dependencies: {', '.join(_missing)}")
     subprocess.check_call([sys.executable, "-m", "pip", "install", *_missing],
                           stdout=sys.stdout, stderr=sys.stderr)
 
-from downloader import bootstrap, download_playlist
-from cast_manager import CastManager
 from soniq import (
     _connect, analyze_library, find_similar, get_zones, generate_playlist,
     migrate_from_json, find_by_harmony, get_mood_clusters, find_transitions,
@@ -46,6 +51,7 @@ from soniq import (
 
 PORT = 8000
 ROOT = os.path.dirname(os.path.abspath(__file__))
+ADDONS_DIR = os.path.join(ROOT, "addons")
 CONFIG_FILE = os.path.join(ROOT, "config.json")
 
 
@@ -84,11 +90,8 @@ def get_lan_ip():
         return "127.0.0.1"
 
 
-cast_mgr = CastManager(port=PORT, get_lan_ip=get_lan_ip)
-
-
 # ---------------------------------------------------------------------------
-# Job tracker (download jobs)
+# Job tracker (shared infrastructure — used by analysis + addons)
 # ---------------------------------------------------------------------------
 
 jobs = {}
@@ -105,31 +108,6 @@ def _create_job(url):
     with jobs_lock:
         jobs[job_id] = job
     return job
-
-
-def _run_job(job):
-    job["status"] = "downloading"
-
-    def on_progress(data):
-        with job["condition"]:
-            job["events"].append(data)
-            job["condition"].notify_all()
-
-    try:
-        result = download_playlist(job["url"], MUSIC_ROOT, on_progress=on_progress)
-        result["status"] = "complete"
-        with job["condition"]:
-            job["events"].append(result)
-            job["status"] = "complete"
-            job["done"] = True
-            job["condition"].notify_all()
-    except Exception as e:
-        err = {"message": f"Error: {e}", "status": "error"}
-        with job["condition"]:
-            job["events"].append(err)
-            job["status"] = "error"
-            job["done"] = True
-            job["condition"].notify_all()
 
 
 def _run_analysis(job):
@@ -156,7 +134,199 @@ def _run_analysis(job):
 
 
 # ---------------------------------------------------------------------------
-# Library scanner
+# Addon system
+# ---------------------------------------------------------------------------
+
+_addons = {}          # id → {manifest, module, routes, status}
+_addon_routes = {     # method → {path: (handler, match_type)}
+    "GET": {}, "POST": {}, "DELETE": {},
+}
+_addon_shutdowns = [] # shutdown callbacks
+
+
+def _addon_ctx():
+    """Build the context dict passed to addon register()."""
+    return {
+        "get_music_root": lambda: MUSIC_ROOT,
+        "create_job": _create_job,
+        "jobs": jobs,
+        "jobs_lock": jobs_lock,
+        "get_lan_ip": get_lan_ip,
+        "port": PORT,
+    }
+
+
+def _activate_addon(addon_id, addon_dir, manifest):
+    """Import, register, and activate a backend addon. Returns True on success."""
+    name = os.path.basename(addon_dir)
+    try:
+        if addon_dir not in sys.path:
+            sys.path.insert(0, os.path.dirname(addon_dir))
+
+        module_name = f"addons.{name}"
+
+        # If module was previously loaded (e.g. failed import), remove it
+        if module_name in sys.modules:
+            del sys.modules[module_name]
+
+        spec = importlib.util.spec_from_file_location(
+            module_name, os.path.join(addon_dir, "__init__.py")
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+
+        routes = {}
+        if hasattr(module, "register"):
+            routes = module.register(_addon_ctx())
+
+        # Register routes
+        for method, paths in routes.items():
+            method = method.upper()
+            if method not in _addon_routes:
+                _addon_routes[method] = {}
+            for path, handler in paths.items():
+                if path.endswith("*"):
+                    _addon_routes[method][path[:-1]] = (handler, "prefix")
+                else:
+                    _addon_routes[method][path] = (handler, "exact")
+
+        if hasattr(module, "shutdown"):
+            _addon_shutdowns.append(module.shutdown)
+
+        _addons[addon_id] = {
+            "manifest": manifest,
+            "module": module,
+            "status": "loaded",
+            "dir": addon_dir,
+        }
+        route_count = sum(len(v) for v in routes.values())
+        print(f"  Addon {manifest['name']} v{manifest.get('version', '?')}: "
+              f"loaded ({route_count} routes)")
+        return True
+
+    except Exception as e:
+        _addons[addon_id] = {
+            "manifest": manifest,
+            "module": None,
+            "status": "error",
+            "error": str(e),
+            "dir": addon_dir,
+        }
+        print(f"  Addon {manifest['name']}: load error — {e}")
+        return False
+
+
+def _load_addons():
+    """Discover and load addons from the addons/ directory."""
+    if not os.path.isdir(ADDONS_DIR):
+        return
+
+    for name in sorted(os.listdir(ADDONS_DIR)):
+        addon_dir = os.path.join(ADDONS_DIR, name)
+        manifest_path = os.path.join(addon_dir, "manifest.json")
+        if not os.path.isfile(manifest_path):
+            continue
+
+        try:
+            with open(manifest_path) as f:
+                manifest = json.load(f)
+        except Exception as e:
+            print(f"  Addon {name}: bad manifest — {e}")
+            continue
+
+        addon_id = manifest.get("id", name)
+        addon_type = manifest.get("type", "unknown")
+
+        # Check if dependencies are available
+        deps = manifest.get("deps", [])
+        missing_deps = [d for d in deps if not importlib.util.find_spec(d.replace("-", "_"))]
+
+        if addon_type == "backend" and missing_deps:
+            _addons[addon_id] = {
+                "manifest": manifest,
+                "module": None,
+                "status": "missing_deps",
+                "missing_deps": missing_deps,
+                "dir": addon_dir,
+            }
+            print(f"  Addon {manifest['name']}: deps missing ({', '.join(missing_deps)})")
+            continue
+
+        if addon_type == "backend":
+            _activate_addon(addon_id, addon_dir, manifest)
+
+        elif addon_type == "view":
+            _addons[addon_id] = {
+                "manifest": manifest,
+                "module": None,
+                "status": "loaded",
+                "dir": addon_dir,
+            }
+            print(f"  Addon {manifest['name']} v{manifest.get('version', '?')}: "
+                  f"view registered")
+
+
+def _dispatch_addon(method, path):
+    """Try to match an addon route. Returns handler or None."""
+    routes = _addon_routes.get(method, {})
+
+    # Exact match first
+    entry = routes.get(path)
+    if entry and entry[1] == "exact":
+        return entry[0], path
+
+    # Prefix match
+    for route_path, (handler, match_type) in routes.items():
+        if match_type == "prefix" and path.startswith(route_path):
+            return handler, path
+
+    return None, None
+
+
+def _install_addon_deps(addon_id):
+    """Install missing dependencies and hot-reload the addon."""
+    addon = _addons.get(addon_id)
+    if not addon:
+        return {"error": "Unknown addon"}
+
+    missing = addon.get("missing_deps", [])
+    if not missing:
+        # Already installed — maybe just needs activation
+        if addon["status"] == "loaded":
+            return {"ok": True, "status": "already_loaded"}
+
+    # Install missing pip packages
+    if missing:
+        try:
+            print(f"  Installing deps for {addon_id}: {', '.join(missing)}")
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", *missing],
+                stdout=sys.stdout, stderr=sys.stderr,
+            )
+        except Exception as e:
+            return {"error": f"Install failed: {e}"}
+
+        # Clear importlib cache so new packages are found
+        importlib.invalidate_caches()
+
+        # Verify all deps are now importable
+        still_missing = [d for d in missing if not importlib.util.find_spec(d.replace("-", "_"))]
+        if still_missing:
+            return {"error": f"Still missing after install: {', '.join(still_missing)}"}
+
+    # Hot-reload: activate the addon without restart
+    manifest = addon["manifest"]
+    addon_dir = addon["dir"]
+
+    if _activate_addon(addon_id, addon_dir, manifest):
+        return {"ok": True, "installed": missing, "status": "loaded"}
+    else:
+        return {"error": "Deps installed but addon failed to load", "installed": missing}
+
+
+# ---------------------------------------------------------------------------
+# Library scanner (for /api/library — directory listing, not analysis)
 # ---------------------------------------------------------------------------
 
 def _read_album_meta(album_path, first_file):
@@ -188,7 +358,6 @@ def _read_album_meta(album_path, first_file):
 
 
 def _load_durations():
-    """Load track durations from the analysis DB, keyed by relative file path."""
     try:
         conn = _connect(MUSIC_ROOT)
         rows = conn.execute("SELECT file, duration FROM tracks WHERE duration > 0").fetchall()
@@ -265,6 +434,28 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path
+
+        # Check addon routes first
+        handler, matched_path = _dispatch_addon("GET", path)
+        if handler:
+            try:
+                # Prefix handlers get the path for ID extraction
+                import inspect
+                sig = inspect.signature(handler)
+                if len(sig.parameters) > 1:
+                    handler(self, path)
+                else:
+                    handler(self)
+                return
+            except Exception as e:
+                print(f"  Addon GET {path} error: {e}")
+                try:
+                    self._json({"error": str(e)}, 500)
+                except Exception:
+                    pass
+                return
+
+        # Core routes
         if path == '/api/config':
             self._json({
                 "lanIp": get_lan_ip(),
@@ -273,24 +464,8 @@ class Handler(SimpleHTTPRequestHandler):
             })
         elif path == '/api/library':
             self._json(scan_library())
-        elif path == '/api/devices':
-            self._json(cast_mgr.list_devices())
-        elif path == '/api/status':
-            self._json(cast_mgr.get_status())
-        elif path == '/api/downloads':
-            with jobs_lock:
-                self._json([{
-                    "id": j["id"], "url": j["url"],
-                    "status": j["status"], "done": j["done"],
-                } for j in jobs.values()])
-        elif path.startswith('/api/download/'):
-            job_id = path.split('/')[-1]
-            with jobs_lock:
-                job = jobs.get(job_id)
-            if not job:
-                self._json({"error": "Unknown job"}, 404)
-            else:
-                self._stream_sse(job)
+        elif path == '/api/addons':
+            self._json(_get_addons_list())
         elif path.startswith('/api/analyze/'):
             job_id = path.split('/')[-1]
             with jobs_lock:
@@ -403,6 +578,8 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json(data)
             else:
                 self._json({"error": "Not found"}, 404)
+        elif path.startswith('/addons/'):
+            self._serve_addon_static(path)
         elif path.startswith('/music/'):
             self._serve_ranged(path)
         else:
@@ -410,6 +587,22 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+
+        # Check addon routes first
+        handler, matched_path = _dispatch_addon("POST", path)
+        if handler:
+            try:
+                handler(self)
+                return
+            except Exception as e:
+                print(f"  Addon POST {path} error: {e}")
+                try:
+                    self._json({"error": str(e)}, 500)
+                except Exception:
+                    pass
+                return
+
+        # Core routes
         try:
             body = self._read_body()
         except Exception as e:
@@ -417,31 +610,10 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
         try:
-            if path == '/api/download':
-                url = body.get('url', '').strip()
-                if not url:
-                    self._json({"error": "Missing url"}, 400)
-                    return
-                job = _create_job(url)
-                threading.Thread(target=_run_job, args=(job,), daemon=True).start()
-                self._json({"id": job["id"], "status": "queued"})
-
-            elif path == '/api/analyze':
+            if path == '/api/analyze':
                 job = _create_job("analyze")
                 threading.Thread(target=_run_analysis, args=(job,), daemon=True).start()
                 self._json({"id": job["id"], "status": "queued"})
-
-            elif path == '/api/cast':
-                device_id = body.get('deviceId')
-                if not device_id:
-                    self._json({"error": "Missing deviceId"}, 400)
-                    return
-                result = cast_mgr.cast(
-                    device_id, body.get('track', {}),
-                    body.get('queue'), body.get('queueIndex', 0),
-                    body.get('baseUrl'),
-                )
-                self._json(result)
 
             elif path == '/api/config':
                 global MUSIC_ROOT, _config
@@ -470,12 +642,13 @@ class Handler(SimpleHTTPRequestHandler):
                 pid = save_playlist(name, zone, tracks, MUSIC_ROOT)
                 self._json({"id": pid, "ok": True})
 
-            elif path == '/api/control':
-                action = body.get('action')
-                if not action:
-                    self._json({"error": "Missing action"}, 400)
+            elif path == '/api/addons/install':
+                addon_id = body.get("id", "")
+                if not addon_id:
+                    self._json({"error": "Missing addon id"}, 400)
                     return
-                self._json(cast_mgr.control(action, body.get('value')))
+                result = _install_addon_deps(addon_id)
+                self._json(result)
 
             else:
                 self.send_error(404)
@@ -489,6 +662,21 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_DELETE(self):
         path = urlparse(self.path).path
+
+        # Check addon routes first
+        handler, matched_path = _dispatch_addon("DELETE", path)
+        if handler:
+            try:
+                handler(self)
+                return
+            except Exception as e:
+                print(f"  Addon DELETE {path} error: {e}")
+                try:
+                    self._json({"error": str(e)}, 500)
+                except Exception:
+                    pass
+                return
+
         if path.startswith('/api/playlists/'):
             try:
                 pid = int(path.split('/')[-1])
@@ -539,9 +727,39 @@ class Handler(SimpleHTTPRequestHandler):
             if done:
                 return
 
+    def _serve_addon_static(self, path):
+        """Serve static files from frontend addons: /addons/:id/file.html"""
+        parts = path.strip("/").split("/")
+        if len(parts) < 2:
+            self.send_error(404)
+            return
+
+        addon_id = parts[1]
+        addon = _addons.get(addon_id)
+        if not addon:
+            self.send_error(404)
+            return
+
+        # Serve file from addon directory (backend addons serve ui/, view addons serve all)
+        rel_path = "/".join(parts[2:]) if len(parts) > 2 else addon["manifest"].get("entry", "index.html")
+        filepath = os.path.join(addon["dir"], rel_path)
+
+        if not os.path.isfile(filepath):
+            self.send_error(404)
+            return
+
+        content_type = mimetypes.guess_type(filepath)[0] or "application/octet-stream"
+        with open(filepath, "rb") as f:
+            content = f.read()
+
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", len(content))
+        self.end_headers()
+        self.wfile.write(content)
+
     def _serve_ranged(self, path):
         rel = unquote(path).lstrip('/')
-        # Strip leading "music/" and resolve against MUSIC_ROOT (may be external drive)
         if rel.startswith('music/'):
             filepath = os.path.join(MUSIC_ROOT, rel[len('music/'):])
         else:
@@ -607,11 +825,43 @@ class Handler(SimpleHTTPRequestHandler):
             path = args[0].split()[1] if args and isinstance(args[0], str) else ''
         except (IndexError, AttributeError):
             path = ''
-        # Show API, music file requests (from Chromecasts), and errors
         if path.startswith('/api/status'):
-            return  # too noisy
+            return
         if path.startswith('/api') or path.startswith('/music/') or '404' in str(args):
             super().log_message(fmt, *args)
+
+
+def _get_addons_list():
+    """Build addon list for /api/addons endpoint."""
+    result = []
+    for addon_id, addon in _addons.items():
+        m = addon["manifest"]
+        entry = {
+            "id": addon_id,
+            "name": m.get("name", addon_id),
+            "version": m.get("version", "0.0.0"),
+            "type": m.get("type", "unknown"),
+            "description": m.get("description", ""),
+            "icon": m.get("icon", ""),
+            "status": addon["status"],
+        }
+        if addon["status"] == "missing_deps":
+            entry["missingDeps"] = addon.get("missing_deps", [])
+        if addon["status"] == "error":
+            entry["error"] = addon.get("error", "")
+        if m.get("type") == "view" and addon["status"] == "loaded":
+            entry["entry"] = f"/addons/{addon_id}/{m.get('entry', 'index.html')}"
+        # Include UI metadata for frontend hydration
+        ui = m.get("ui")
+        if ui and addon["status"] == "loaded":
+            entry["ui"] = {
+                "component": ui.get("component", ""),
+                "entry": f"/addons/{addon_id}/{ui.get('entry', '')}",
+                "trigger": ui.get("trigger"),
+                "events": ui.get("events", {}),
+            }
+        result.append(entry)
+    return result
 
 
 class ThreadedServer(ThreadingMixIn, HTTPServer):
@@ -620,9 +870,6 @@ class ThreadedServer(ThreadingMixIn, HTTPServer):
 
 if __name__ == '__main__':
     os.makedirs(MUSIC_ROOT, exist_ok=True)
-
-    print("Bootstrapping dependencies...")
-    bootstrap()
 
     lan_ip = get_lan_ip()
 
@@ -638,13 +885,18 @@ if __name__ == '__main__':
     if migrated:
         print(f"  Migrated {migrated} tracks from JSON to SQLite.")
 
-    print("Discovering Chromecast devices...")
-    cast_mgr.start_discovery()
+    # Load addons
+    print("Loading addons...")
+    _load_addons()
 
     server = ThreadedServer(('0.0.0.0', PORT), Handler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down...")
-        cast_mgr.stop()
+        for shutdown_fn in _addon_shutdowns:
+            try:
+                shutdown_fn()
+            except Exception:
+                pass
         server.shutdown()

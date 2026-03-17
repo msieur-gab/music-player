@@ -1,0 +1,20 @@
+{
+  "id": "downloader",
+  "name": "YouTube Music Downloader",
+  "version": "1.0.0",
+  "type": "backend",
+  "description": "Download playlists from YouTube Music as m4a with tags and cover art",
+  "deps": ["yt-dlp"],
+  "ui": {
+    "component": "download-panel",
+    "entry": "ui/download-panel.js",
+    "trigger": {
+      "slot": "rail",
+      "label": "Download music",
+      "icon": "<svg viewBox=\"0 0 24 24\"><path d=\"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4\"/><polyline points=\"7 10 12 15 17 10\"/><line x1=\"12\" y1=\"15\" x2=\"12\" y2=\"3\"/></svg>"
+    },
+    "events": {
+      "download-complete": "refresh-library"
+    }
+  }
+}

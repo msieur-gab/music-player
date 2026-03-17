@@ -110,12 +110,13 @@ button.has-badge .badge { animation: pulse 1.8s ease-in-out infinite; }
 
 <span class="spacer"></span>
 
-<button data-action="download" id="dl-btn" title="Download music">
-  <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-  <span class="badge"></span>
-</button>
+<span id="addon-buttons"></span>
 
 <div class="divider"></div>
+
+<button data-action="addons" title="Add-ons">
+  <svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3c0 .6.2 1.2.5 1.6L9 7H5a2 2 0 0 0-2 2v3.5h.6c.8 0 1.6.3 2.2.9s.9 1.4.9 2.1-.3 1.5-.9 2.1-.4.9-1.2.9H3V20a2 2 0 0 0 2 2h3.5v-.6c0-.8.3-1.6.9-2.2s1.4-.9 2.1-.9 1.5.3 2.1.9.9 1.4.9 2.2v.6H18a2 2 0 0 0 2-2v-3l.6.5c.5.3 1 .5 1.6.5a3 3 0 1 0 0-6c-.6 0-1.2.2-1.6.5l-.6.5V9a2 2 0 0 0-2-2h-4l.5-.6c.3-.5.5-1 .5-1.6A3 3 0 0 0 12 2z"/></svg>
+</button>
 
 <button data-action="settings" title="Settings">
   <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -166,9 +167,19 @@ class NavRail extends HTMLElement {
     });
   }
 
-  set downloadActive(active) {
-    const btn = this.shadowRoot.getElementById('dl-btn');
-    btn.classList.toggle('has-badge', active);
+  addAddonButton(addonId, trigger) {
+    const container = this.shadowRoot.getElementById('addon-buttons');
+    const btn = document.createElement('button');
+    btn.dataset.action = addonId;
+    btn.id = `addon-btn-${addonId}`;
+    btn.title = trigger.label || addonId;
+    btn.innerHTML = `${trigger.icon || ''}<span class="badge"></span>`;
+    container.appendChild(btn);
+  }
+
+  setAddonBadge(addonId, active) {
+    const btn = this.shadowRoot.getElementById(`addon-btn-${addonId}`);
+    if (btn) btn.classList.toggle('has-badge', active);
   }
 
   updateThemeIcon(isDark) {
