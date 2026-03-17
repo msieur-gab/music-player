@@ -1,0 +1,112 @@
+[
+  {
+    "track_id": "Ryuichi Sakamoto::12::Merry Christmas Mr. Lawrence",
+    "artist": "Ryuichi Sakamoto", "album": "12", "title": "Merry Christmas Mr. Lawrence",
+    "file": "Ryuichi Sakamoto/12/04 - Merry Christmas Mr. Lawrence.m4a",
+    "duration": 317, "tempo": 95.7, "key": 0, "mode": 1,
+    "arousal": 0.38, "valence": 0.57, "happy": 0.54, "sad": 0.46,
+    "relaxed": 0.58, "aggressive": 0.42, "danceable": 0.56, "party": 0.50,
+    "energetic": 0.40, "still": 0.60, "hypnotic": 0.60, "varied": 0.40,
+    "instrumental": 0.44, "vocal": 0.56, "brilliant": 0.50, "warm": 0.50,
+    "radiant": 0.63, "somber": 0.37, "contemplative": 0.55, "restless": 0.45
+  },
+  {
+    "track_id": "GoGo Penguin::A Humdrum Star::Branches Break",
+    "artist": "GoGo Penguin", "album": "A Humdrum Star", "title": "Branches Break",
+    "file": "GoGo Penguin/A Humdrum Star/03 - Branches Break.m4a",
+    "duration": 286, "tempo": 130.5, "key": 7, "mode": 0,
+    "arousal": 0.72, "valence": 0.45, "happy": 0.38, "sad": 0.55,
+    "relaxed": 0.25, "aggressive": 0.58, "danceable": 0.68, "party": 0.52,
+    "energetic": 0.70, "still": 0.30, "hypnotic": 0.65, "varied": 0.35,
+    "instrumental": 0.92, "vocal": 0.08, "brilliant": 0.62, "warm": 0.38,
+    "radiant": 0.48, "somber": 0.52, "contemplative": 0.30, "restless": 0.70
+  },
+  {
+    "track_id": "Bonobo::Migration::Kerala",
+    "artist": "Bonobo", "album": "Migration", "title": "Kerala",
+    "file": "Bonobo/Migration/04 - Kerala.m4a",
+    "duration": 353, "tempo": 108.3, "key": 5, "mode": 1,
+    "arousal": 0.55, "valence": 0.62, "happy": 0.60, "sad": 0.35,
+    "relaxed": 0.52, "aggressive": 0.35, "danceable": 0.72, "party": 0.58,
+    "energetic": 0.55, "still": 0.45, "hypnotic": 0.70, "varied": 0.30,
+    "instrumental": 0.75, "vocal": 0.25, "brilliant": 0.55, "warm": 0.45,
+    "radiant": 0.68, "somber": 0.32, "contemplative": 0.40, "restless": 0.60
+  },
+  {
+    "track_id": "Nils Frahm::All Melody::My Friend the Forest",
+    "artist": "Nils Frahm", "album": "All Melody", "title": "My Friend the Forest",
+    "file": "Nils Frahm/All Melody/06 - My Friend the Forest.m4a",
+    "duration": 420, "tempo": 72.0, "key": 2, "mode": 0,
+    "arousal": 0.15, "valence": 0.42, "happy": 0.30, "sad": 0.62,
+    "relaxed": 0.85, "aggressive": 0.08, "danceable": 0.12, "party": 0.05,
+    "energetic": 0.10, "still": 0.90, "hypnotic": 0.82, "varied": 0.18,
+    "instrumental": 0.95, "vocal": 0.05, "brilliant": 0.28, "warm": 0.72,
+    "radiant": 0.35, "somber": 0.65, "contemplative": 0.88, "restless": 0.12
+  },
+  {
+    "track_id": "Daft Punk::Random Access Memories::Get Lucky",
+    "artist": "Daft Punk", "album": "Random Access Memories", "title": "Get Lucky",
+    "file": "Daft Punk/Random Access Memories/08 - Get Lucky.m4a",
+    "duration": 369, "tempo": 116.0, "key": 11, "mode": 1,
+    "arousal": 0.68, "valence": 0.82, "happy": 0.85, "sad": 0.12,
+    "relaxed": 0.35, "aggressive": 0.20, "danceable": 0.92, "party": 0.88,
+    "energetic": 0.72, "still": 0.28, "hypnotic": 0.75, "varied": 0.25,
+    "instrumental": 0.22, "vocal": 0.78, "brilliant": 0.70, "warm": 0.30,
+    "radiant": 0.85, "somber": 0.15, "contemplative": 0.10, "restless": 0.90
+  },
+  {
+    "track_id": "Ballaké Sissoko::At Peace::Boubalaka",
+    "artist": "Ballaké Sissoko", "album": "At Peace", "title": "Boubalaka",
+    "file": "Ballaké Sissoko/At Peace/02 - Boubalaka.m4a",
+    "duration": 398, "tempo": 88.0, "key": 4, "mode": 1,
+    "arousal": 0.25, "valence": 0.65, "happy": 0.58, "sad": 0.30,
+    "relaxed": 0.78, "aggressive": 0.08, "danceable": 0.35, "party": 0.15,
+    "energetic": 0.22, "still": 0.78, "hypnotic": 0.72, "varied": 0.28,
+    "instrumental": 0.90, "vocal": 0.10, "brilliant": 0.35, "warm": 0.65,
+    "radiant": 0.60, "somber": 0.40, "contemplative": 0.70, "restless": 0.30
+  },
+  {
+    "track_id": "Four Tet::Rounds::Unspoken",
+    "artist": "Four Tet", "album": "Rounds", "title": "Unspoken",
+    "file": "Four Tet/Rounds/05 - Unspoken.m4a",
+    "duration": 408, "tempo": 126.0, "key": 9, "mode": 0,
+    "arousal": 0.52, "valence": 0.48, "happy": 0.42, "sad": 0.50,
+    "relaxed": 0.45, "aggressive": 0.30, "danceable": 0.65, "party": 0.42,
+    "energetic": 0.50, "still": 0.50, "hypnotic": 0.80, "varied": 0.20,
+    "instrumental": 0.88, "vocal": 0.12, "brilliant": 0.58, "warm": 0.42,
+    "radiant": 0.45, "somber": 0.55, "contemplative": 0.55, "restless": 0.45
+  },
+  {
+    "track_id": "Plastikman::EX::Kriket",
+    "artist": "Plastikman", "album": "EX", "title": "Kriket",
+    "file": "Plastikman/EX/03 - Kriket.m4a",
+    "duration": 520, "tempo": 132.0, "key": 1, "mode": 0,
+    "arousal": 0.60, "valence": 0.22, "happy": 0.15, "sad": 0.68,
+    "relaxed": 0.20, "aggressive": 0.55, "danceable": 0.70, "party": 0.45,
+    "energetic": 0.58, "still": 0.42, "hypnotic": 0.90, "varied": 0.10,
+    "instrumental": 0.98, "vocal": 0.02, "brilliant": 0.42, "warm": 0.58,
+    "radiant": 0.18, "somber": 0.82, "contemplative": 0.35, "restless": 0.65
+  },
+  {
+    "track_id": "Mammal Hands::Shadow Work::Kernel",
+    "artist": "Mammal Hands", "album": "Shadow Work", "title": "Kernel",
+    "file": "Mammal Hands/Shadow Work/05 - Kernel.m4a",
+    "duration": 345, "tempo": 140.0, "key": 7, "mode": 0,
+    "arousal": 0.65, "valence": 0.50, "happy": 0.45, "sad": 0.48,
+    "relaxed": 0.30, "aggressive": 0.42, "danceable": 0.60, "party": 0.38,
+    "energetic": 0.62, "still": 0.38, "hypnotic": 0.75, "varied": 0.25,
+    "instrumental": 0.85, "vocal": 0.15, "brilliant": 0.52, "warm": 0.48,
+    "radiant": 0.50, "somber": 0.50, "contemplative": 0.42, "restless": 0.58
+  },
+  {
+    "track_id": "Lykke Li::Wounded Rhymes::I Follow Rivers",
+    "artist": "Lykke Li", "album": "Wounded Rhymes", "title": "I Follow Rivers",
+    "file": "Lykke Li/Wounded Rhymes/04 - I Follow Rivers.m4a",
+    "duration": 254, "tempo": 120.0, "key": 6, "mode": 0,
+    "arousal": 0.58, "valence": 0.55, "happy": 0.52, "sad": 0.42,
+    "relaxed": 0.30, "aggressive": 0.35, "danceable": 0.78, "party": 0.62,
+    "energetic": 0.60, "still": 0.40, "hypnotic": 0.55, "varied": 0.45,
+    "instrumental": 0.15, "vocal": 0.85, "brilliant": 0.60, "warm": 0.40,
+    "radiant": 0.62, "somber": 0.38, "contemplative": 0.25, "restless": 0.75
+  }
+]
