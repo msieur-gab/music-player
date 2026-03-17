@@ -167,13 +167,23 @@ class NavRail extends HTMLElement {
     });
   }
 
-  addAddonButton(addonId, trigger) {
+  // Also clear addon action buttons selection (they don't use aria-selected)
+  // but addon tab buttons DO use it via the querySelectorAll above
+
+  addAddonButton(addonId, trigger, mode = 'action') {
     const container = this.shadowRoot.getElementById('addon-buttons');
     const btn = document.createElement('button');
-    btn.dataset.action = addonId;
     btn.id = `addon-btn-${addonId}`;
     btn.title = trigger.label || addonId;
     btn.innerHTML = `${trigger.icon || ''}<span class="badge"></span>`;
+
+    if (mode === 'tab') {
+      // View addon: acts as a navigation tab
+      btn.dataset.tab = addonId;
+    } else {
+      // Backend addon: acts as an action button
+      btn.dataset.action = addonId;
+    }
     container.appendChild(btn);
   }
 

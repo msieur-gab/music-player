@@ -96,6 +96,7 @@ h3 {
   transition: border-color var(--transition);
 }
 .card.loaded    { border-left: 3px solid var(--accent); }
+.card.available { border-left: 3px solid var(--text-muted, #6e6d6a); }
 .card.not-installed { border-left: 3px solid var(--text-faint); }
 .card.error     { border-left: 3px solid #c44; }
 
@@ -279,6 +280,9 @@ class AddonManager extends HTMLElement {
     if (addon.status === 'loaded') {
       statusHtml = '<div class="card-status active">Installed and active</div>';
       actionHtml = '<span class="card-action active-badge">Active</span>';
+    } else if (addon.status === 'available') {
+      statusHtml = '<div class="card-status">Ready to enable</div>';
+      actionHtml = '<button class="card-action install">Enable</button>';
     } else if (addon.status === 'missing_deps') {
       const deps = (addon.missingDeps || []).join(', ');
       statusHtml = `<div class="card-status">Requires: ${deps}</div>`;

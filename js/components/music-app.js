@@ -270,6 +270,11 @@ class MusicApp extends HTMLElement {
       this._loadAddons();
     });
 
+    // ── View addon playback — universal contract ──
+    this.shadowRoot.addEventListener('addon-play', (e) => {
+      this._playPlaylist(e.detail.tracks, e.detail.index);
+    });
+
     // ── Settings events ──
     $('settings').addEventListener('username-change', (e) => {
       $('home').userName = e.detail.name;
@@ -319,6 +324,13 @@ class MusicApp extends HTMLElement {
     albumsView.removeAttribute('active');
     playlists.removeAttribute('active');
 
+    // Hide all addon views
+    if (this._addonViews) {
+      for (const [id, el] of Object.entries(this._addonViews)) {
+        el.style.display = 'none';
+      }
+    }
+
     if (tab === 'home') {
       home.setAttribute('active', '');
       home.refresh();
@@ -327,6 +339,9 @@ class MusicApp extends HTMLElement {
     } else if (tab === 'playlists') {
       playlists.setAttribute('active', '');
       playlists.refresh();
+    } else if (this._addonViews?.[tab]) {
+      // Addon view
+      this._addonViews[tab].style.display = 'flex';
     }
   }
 
@@ -382,15 +397,31 @@ class MusicApp extends HTMLElement {
     const container = this.shadowRoot.getElementById('addon-container');
     const rail = this.shadowRoot.getElementById('rail');
 
+    this._addonViews = this._addonViews || {};
+
     for (const addon of addons) {
-      // Create the component element
+      // Skip if already loaded
+      if (this.shadowRoot.getElementById(`addon-${addon.id}`)) continue;
+
       const el = document.createElement(addon.component);
       el.id = `addon-${addon.id}`;
-      container.appendChild(el);
 
-      // Add trigger button to nav-rail (if slot is 'rail')
-      if (addon.trigger && addon.trigger.slot === 'rail') {
-        rail.addAddonButton(addon.id, addon.trigger);
+      if (addon.trigger?.slot === 'rail') {
+        if (addon.type === 'view') {
+          // View addon: render as a switchable view in the feed area
+          el.style.gridArea = 'feed';
+          el.style.display = 'none';
+          el.style.minHeight = '0';
+          this.shadowRoot.insertBefore(el, container);
+          this._addonViews[addon.id] = el;
+          rail.addAddonButton(addon.id, addon.trigger, 'tab');
+        } else {
+          // Backend addon: overlay (download panel, etc.)
+          container.appendChild(el);
+          rail.addAddonButton(addon.id, addon.trigger);
+        }
+      } else {
+        container.appendChild(el);
       }
     }
   }

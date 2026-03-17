@@ -1,0 +1,18 @@
+{
+  "id": "sonic-sunburst",
+  "name": "Sonic Sunburst",
+  "version": "1.0.0",
+  "type": "view",
+  "autoload": true,
+  "description": "Seed a track \u2014 rings of similarity expand outward, wedges reveal the emotional axis that connects",
+  "entry": "ui/sonic-sunburst.js",
+  "ui": {
+    "component": "sonic-sunburst",
+    "entry": "ui/sonic-sunburst.js",
+    "trigger": {
+      "slot": "rail",
+      "label": "Sonic Sunburst",
+      "icon": "<svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"3\"/><path d=\"M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83\"/></svg>"
+    }
+  }
+}

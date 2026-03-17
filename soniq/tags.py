@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 
 log = logging.getLogger(__name__)
 
-CURRENT_VERSION = "0.6"
+CURRENT_VERSION = "0.7"
 TAG_DESC = "com.soniq:features"
 MP4_ATOM = "----:com.soniq:features"
 
@@ -41,20 +41,22 @@ SCALAR_KEYS = [
     "chroma_major_corr",
 ]
 
+# Maps DB column names (long) → tag short keys.
+# Must match what soniq-lab v0.7 writes.
 SCALAR_SHORT = {
-    "duration": "dur", "tempo": "tempo", "key": "key", "mode": "mode",
-    "rms_mean": "rms", "rms_variance": "rms_var",
-    "centroid_mean": "centroid", "centroid_std": "cent_std",
-    "bandwidth_std": "bw_std", "flatness_mean": "flat",
+    "duration": "duration", "tempo": "tempo", "key": "key", "mode": "mode",
+    "rms_mean": "rms_mean", "rms_variance": "rms_var",
+    "centroid_mean": "centroid", "centroid_std": "centroid_std",
+    "bandwidth_std": "bandwidth_std", "flatness_mean": "flatness",
     "spectral_flux": "flux", "flux_std": "flux_std",
     "onset_strength": "onset", "beat_strength": "beat",
-    "treble_ratio": "treble", "mfcc_delta_var": "mfcc_dv",
-    "mod_crest": "mod_cr",
-    "harm_energy": "harm_e", "perc_energy": "perc_e",
-    "harm_fraction": "harm_f",
-    "beat_regularity": "beat_reg", "rhythm_complexity": "rhy_cplx",
-    "plp_stability": "plp_stab", "onset_rate": "onset_r",
-    "chroma_major_corr": "maj_corr",
+    "treble_ratio": "treble_ratio", "mfcc_delta_var": "mfcc_delta_var",
+    "mod_crest": "mod_crest",
+    "harm_energy": "harm_energy", "perc_energy": "perc_energy",
+    "harm_fraction": "harm_fraction",
+    "beat_regularity": "beat_regularity", "rhythm_complexity": "rhythm_complexity",
+    "plp_stability": "plp_stability", "onset_rate": "onset_rate",
+    "chroma_major_corr": "chroma_major_corr",
 }
 
 SCALAR_FULL = {v: k for k, v in SCALAR_SHORT.items()}
@@ -105,6 +107,8 @@ def features_to_tag(features, classifications=None):
             cls["nrg"] = {k: _round(v) for k, v in classifications["_energy_components"].items()}
         if "_hypnotic_path" in classifications:
             cls["hypnotic_path"] = classifications["_hypnotic_path"]
+        if "genre" in classifications:
+            cls["genre"] = classifications["genre"]
         tag["cls"] = cls
 
     return json.dumps(tag, separators=(",", ":"))
@@ -152,6 +156,8 @@ def tag_to_features(tag_json):
             classifications["_energy_components"] = cls["nrg"]
         if "hypnotic_path" in cls:
             classifications["_hypnotic_path"] = cls["hypnotic_path"]
+        if "genre" in cls:
+            classifications["genre"] = cls["genre"]
 
     return features, classifications, version
 

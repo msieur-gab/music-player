@@ -21,6 +21,7 @@ export async function loadAddons() {
         loaded.push({
           id: addon.id,
           name: addon.name,
+          type: addon.type,
           component: addon.ui.component,
           trigger: addon.ui.trigger,
           events: addon.ui.events || {},

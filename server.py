@@ -157,7 +157,28 @@ def _addon_ctx():
 
 
 def _activate_addon(addon_id, addon_dir, manifest):
-    """Import, register, and activate a backend addon. Returns True on success."""
+    """Import, register, and activate an addon. Returns True on success."""
+    addon_type = manifest.get("type", "unknown")
+
+    # View addons: no Python module to load, just mark as loaded
+    if addon_type == "view":
+        _addons[addon_id] = {
+            "manifest": manifest,
+            "module": None,
+            "status": "loaded",
+            "dir": addon_dir,
+        }
+        # Update autoload so it stays enabled on restart
+        manifest["autoload"] = True
+        manifest_path = os.path.join(addon_dir, "manifest.json")
+        try:
+            with open(manifest_path, "w") as f:
+                json.dump(manifest, f, indent=2)
+        except Exception:
+            pass
+        print(f"  Addon {manifest['name']} v{manifest.get('version', '?')}: view enabled")
+        return True
+
     name = os.path.basename(addon_dir)
     try:
         if addon_dir not in sys.path:
@@ -238,6 +259,18 @@ def _load_addons():
         addon_id = manifest.get("id", name)
         addon_type = manifest.get("type", "unknown")
 
+        # Addons with autoload=false are discovered but not activated
+        if manifest.get("autoload") is False:
+            _addons[addon_id] = {
+                "manifest": manifest,
+                "module": None,
+                "status": "available",
+                "dir": addon_dir,
+            }
+            print(f"  Addon {manifest['name']} v{manifest.get('version', '?')}: "
+                  f"available (enable in add-ons manager)")
+            continue
+
         # Check if dependencies are available
         deps = manifest.get("deps", [])
         missing_deps = [d for d in deps if not importlib.util.find_spec(d.replace("-", "_"))]
@@ -290,11 +323,10 @@ def _install_addon_deps(addon_id):
     if not addon:
         return {"error": "Unknown addon"}
 
+    if addon["status"] == "loaded":
+        return {"ok": True, "status": "already_loaded"}
+
     missing = addon.get("missing_deps", [])
-    if not missing:
-        # Already installed — maybe just needs activation
-        if addon["status"] == "loaded":
-            return {"ok": True, "status": "already_loaded"}
 
     # Install missing pip packages
     if missing:
