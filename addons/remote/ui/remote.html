@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0a0a0f">
+<title>MusiCast Remote</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0a0a0f;
+  --surface: #13131a;
+  --border: #1e1e2a;
+  --text: #e8e8f0;
+  --text-mid: #8888a0;
+  --text-dim: #4a4a5c;
+  --accent: #f0802a;
+  --accent-glow: rgba(240, 128, 42, 0.15);
+  --radius: 16px;
+  --font: 'DM Sans', system-ui, -apple-system, sans-serif;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  padding: env(safe-area-inset-top) 20px env(safe-area-inset-bottom);
+}
+
+/* ── Header ── */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 0 8px;
+  flex-shrink: 0;
+}
+
+.device-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+  animation: pulse 2s ease-in-out infinite;
+}
+.device-dot.idle { background: var(--text-dim); box-shadow: none; animation: none; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.device-name {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-mid);
+}
+
+.queue-pos {
+  font-size: 10px;
+  color: var(--text-dim);
+  letter-spacing: 0.05em;
+}
+
+/* ── Album Art ── */
+.art-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: 16px 0;
+}
+
+.art {
+  width: min(280px, 65vw);
+  height: min(280px, 65vw);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+  position: relative;
+  box-shadow:
+    0 8px 40px rgba(0, 0, 0, 0.5),
+    0 0 0 1px var(--border);
+  transition: box-shadow 0.6s ease;
+}
+
+.art.playing {
+  box-shadow:
+    0 8px 40px rgba(0, 0, 0, 0.5),
+    0 0 0 1px var(--border),
+    0 0 60px var(--accent-glow);
+}
+
+.art img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.art-placeholder {
+  width: 100%; height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.art-placeholder svg {
+  width: 48px; height: 48px;
+  stroke: var(--text-dim);
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ── Track Info ── */
+.track-info {
+  text-align: center;
+  padding: 0 24px;
+  flex-shrink: 0;
+}
+
+.track-title {
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.track-artist {
+  font-size: 13px;
+  font-weight: 300;
+  color: var(--text-mid);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Seek Bar ── */
+.seek-section {
+  padding: 20px 24px 0;
+  flex-shrink: 0;
+}
+
+.time-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+  margin-top: 6px;
+}
+
+/* ── Range Inputs ── */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  outline: none;
+  cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--text);
+  border: none;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+input[type="range"]:active::-webkit-slider-thumb {
+  transform: scale(1.3);
+  background: var(--accent);
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--text);
+  border: none;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+}
+
+/* ── Transport Controls ── */
+.controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 32px;
+  padding: 24px 0 8px;
+  flex-shrink: 0;
+}
+
+.ctrl-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 8px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, transform 0.1s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.ctrl-btn:active { transform: scale(0.9); }
+.ctrl-btn svg {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ctrl-prev svg, .ctrl-next svg { width: 28px; height: 28px; }
+
+.ctrl-play {
+  width: 64px; height: 64px;
+  background: var(--accent);
+  border-radius: 50%;
+  box-shadow: 0 4px 20px var(--accent-glow);
+  transition: background 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;
+}
+.ctrl-play:active {
+  transform: scale(0.92);
+  box-shadow: 0 2px 12px var(--accent-glow);
+}
+.ctrl-play svg {
+  width: 28px; height: 28px;
+  stroke: #0a0a0f;
+  fill: #0a0a0f;
+  stroke-width: 1;
+}
+
+/* ── Volume ── */
+.volume-section {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 24px 16px;
+  flex-shrink: 0;
+}
+
+.vol-icon {
+  flex-shrink: 0;
+}
+.vol-icon svg {
+  width: 16px; height: 16px;
+  stroke: var(--text-dim);
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.volume-section input[type="range"] {
+  flex: 1;
+  height: 3px;
+}
+
+/* ── Idle State ── */
+.idle-state {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  gap: 16px;
+  color: var(--text-dim);
+}
+.idle-state.active { display: flex; }
+.idle-state svg {
+  width: 48px; height: 48px;
+  stroke: var(--text-dim);
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.5;
+}
+.idle-state p {
+  font-size: 14px;
+  font-weight: 300;
+}
+.idle-state .sub {
+  font-size: 11px;
+  color: var(--text-dim);
+  opacity: 0.6;
+}
+
+.player { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.player.hidden { display: none; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="device-dot idle" id="dot"></div>
+  <span class="device-name" id="device">Connecting...</span>
+  <span class="queue-pos" id="queue-pos"></span>
+</div>
+
+<div class="idle-state active" id="idle">
+  <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+  <p>Waiting for playback</p>
+  <span class="sub">Play something from MusiCast to control it here</span>
+</div>
+
+<div class="player hidden" id="player">
+  <div class="art-container">
+    <div class="art" id="art">
+      <div class="art-placeholder" id="art-placeholder">
+        <svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+      </div>
+    </div>
+  </div>
+
+  <div class="track-info">
+    <div class="track-title" id="title">--</div>
+    <div class="track-artist" id="artist">--</div>
+  </div>
+
+  <div class="seek-section">
+    <input type="range" id="seek" min="0" max="100" value="0" step="0.1">
+    <div class="time-row">
+      <span id="time-cur">0:00</span>
+      <span id="time-dur">0:00</span>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button class="ctrl-btn ctrl-prev" id="prev" aria-label="Previous">
+      <svg viewBox="0 0 24 24"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>
+    </button>
+    <button class="ctrl-btn ctrl-play" id="play" aria-label="Play/Pause">
+      <svg viewBox="0 0 24 24" id="play-icon"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+    </button>
+    <button class="ctrl-btn ctrl-next" id="next" aria-label="Next">
+      <svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+    </button>
+  </div>
+
+  <div class="volume-section">
+    <span class="vol-icon">
+      <svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+    </span>
+    <input type="range" id="volume" min="0" max="1" value="1" step="0.01">
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// ── State ──
+let state = 'idle';
+let currentTime = 0;
+let duration = 0;
+let lastPollTs = 0;
+let seeking = false;
+let volumeChanging = false;
+let lastCover = null;
+let lastTitle = null;
+
+// ── Format time ──
+function fmt(s) {
+  if (!s || !isFinite(s)) return '0:00';
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec < 10 ? '0' : ''}${sec}`;
+}
+
+// ── API ──
+let isCasting = false;
+
+async function control(action, value) {
+  try {
+    if (isCasting) {
+      await fetch('/api/control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, value }),
+      });
+    } else {
+      await fetch('/api/playback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: { action, value } }),
+      });
+    }
+  } catch {}
+}
+
+// ── Debounce ──
+function debounce(fn, ms) {
+  let t;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+
+const debouncedSeek = debounce(v => control('seek', v), 150);
+const debouncedVolume = debounce(v => control('volume', v), 100);
+
+// ── Controls ──
+$('play').addEventListener('click', () => control('toggle'));
+$('prev').addEventListener('click', () => control('prev'));
+$('next').addEventListener('click', () => control('next'));
+
+$('seek').addEventListener('input', () => {
+  seeking = true;
+  currentTime = parseFloat($('seek').value);
+  $('time-cur').textContent = fmt(currentTime);
+  debouncedSeek(currentTime);
+});
+$('seek').addEventListener('change', () => { seeking = false; });
+
+$('volume').addEventListener('input', () => {
+  volumeChanging = true;
+  debouncedVolume(parseFloat($('volume').value));
+});
+$('volume').addEventListener('change', () => { volumeChanging = false; });
+
+// ── Play/Pause icon ──
+const iconPlay = '<polygon points="6 3 20 12 6 21 6 3"/>';
+const iconPause = '<rect x="5" y="4" width="4" height="16"/><rect x="15" y="4" width="4" height="16"/>';
+
+// ── Media Session ──
+function updateMediaSession(status) {
+  if (!('mediaSession' in navigator)) return;
+  if (status.title && status.title !== lastTitle) {
+    lastTitle = status.title;
+    const artwork = [];
+    if (status.cover) {
+      artwork.push({ src: new URL(status.cover, location.origin).href, sizes: '512x512', type: 'image/jpeg' });
+    }
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: status.title,
+      artist: status.artist || '',
+      album: status.album || '',
+      artwork,
+    });
+  }
+  navigator.mediaSession.playbackState = status.state === 'playing' ? 'playing' : 'paused';
+
+  if (status.duration && isFinite(status.duration)) {
+    try {
+      navigator.mediaSession.setPositionState({
+        duration: status.duration,
+        playbackRate: 1,
+        position: Math.min(status.currentTime || 0, status.duration),
+      });
+    } catch {}
+  }
+}
+
+function setupMediaSession() {
+  if (!('mediaSession' in navigator)) return;
+  navigator.mediaSession.setActionHandler('play', () => control('toggle'));
+  navigator.mediaSession.setActionHandler('pause', () => control('toggle'));
+  navigator.mediaSession.setActionHandler('previoustrack', () => control('prev'));
+  navigator.mediaSession.setActionHandler('nexttrack', () => control('next'));
+  navigator.mediaSession.setActionHandler('seekto', e => control('seek', e.seekTime));
+}
+
+// Keep media session alive with silent audio
+let silentAudio;
+function ensureSilentAudio() {
+  if (silentAudio) return;
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  gain.gain.value = 0.0001; // near-silent
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start();
+  silentAudio = { ctx, osc, gain };
+}
+
+// ── Poll ──
+async function poll() {
+  try {
+    // Try local playback state first, fall back to cast status
+    let s;
+    try {
+      const r = await fetch('/api/playback');
+      s = await r.json();
+    } catch { s = { state: 'idle' }; }
+    // If local is idle, check cast status
+    if (s.state === 'idle') {
+      try {
+        const r2 = await fetch('/api/status');
+        const cs = await r2.json();
+        if (cs.state && cs.state !== 'idle') s = cs;
+      } catch {}
+    }
+
+    // Track whether we're controlling cast or local
+    isCasting = !!(s.device);
+
+    if (s.state === 'idle' || !s.title) {
+      $('idle').classList.add('active');
+      $('player').classList.add('hidden');
+      $('dot').classList.add('idle');
+      state = 'idle';
+      return;
+    }
+
+    $('idle').classList.remove('active');
+    $('player').classList.remove('hidden');
+    $('dot').classList.remove('idle');
+
+    state = s.state;
+    $('device').textContent = s.device || 'Local';
+    $('title').textContent = s.title || '--';
+    $('artist').textContent = s.artist || '--';
+    $('play-icon').innerHTML = s.state === 'playing' ? iconPause : iconPlay;
+    $('art').classList.toggle('playing', s.state === 'playing');
+
+    if (s.queueLength > 1) {
+      $('queue-pos').textContent = `${(s.queueIndex || 0) + 1} of ${s.queueLength}`;
+    } else {
+      $('queue-pos').textContent = '';
+    }
+
+    // Cover art
+    const coverUrl = s.cover || null;
+    if (coverUrl !== lastCover) {
+      lastCover = coverUrl;
+      if (coverUrl) {
+        const img = document.createElement('img');
+        img.src = coverUrl;
+        img.alt = '';
+        img.onload = () => {
+          $('art').innerHTML = '';
+          $('art').appendChild(img);
+        };
+      } else {
+        $('art').innerHTML = $('art-placeholder')?.outerHTML || '';
+      }
+    }
+
+    // Seek
+    duration = s.duration || 0;
+    if (!seeking) {
+      currentTime = s.currentTime || 0;
+      lastPollTs = performance.now();
+      $('seek').max = duration;
+      $('seek').value = currentTime;
+      $('time-cur').textContent = fmt(currentTime);
+    }
+    $('time-dur').textContent = fmt(duration);
+
+    // Volume
+    if (!volumeChanging && s.volume != null) {
+      $('volume').value = s.volume;
+    }
+
+    // Media session
+    ensureSilentAudio();
+    updateMediaSession(s);
+
+  } catch {
+    $('device').textContent = 'Connection lost';
+    $('dot').classList.add('idle');
+  }
+}
+
+// ── Smooth seek interpolation ──
+function interpolate() {
+  if (state === 'playing' && !seeking) {
+    const elapsed = (performance.now() - lastPollTs) / 1000;
+    const t = Math.min(currentTime + elapsed, duration);
+    $('seek').value = t;
+    $('time-cur').textContent = fmt(t);
+  }
+  requestAnimationFrame(interpolate);
+}
+
+// ── Init ──
+setupMediaSession();
+setInterval(poll, 500);
+poll();
+requestAnimationFrame(interpolate);
+</script>
+</body>
+</html>

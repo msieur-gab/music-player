@@ -92,6 +92,14 @@ def get_lan_ip():
 
 
 # ---------------------------------------------------------------------------
+# Local playback state (pushed by browser, read by remote)
+# ---------------------------------------------------------------------------
+
+_playback_state = {"state": "idle"}
+_playback_cmds = []   # pending commands from remote → browser
+_playback_lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
 # Job tracker (shared infrastructure — used by analysis + addons)
 # ---------------------------------------------------------------------------
 
@@ -501,6 +509,14 @@ class Handler(SimpleHTTPRequestHandler):
                 "port": PORT,
                 "musicDir": MUSIC_ROOT,
             })
+        elif path == '/api/playback':
+            with _playback_lock:
+                cmds = _playback_cmds[:]
+                _playback_cmds.clear()
+                resp = dict(_playback_state)
+            if cmds:
+                resp["commands"] = cmds
+            self._json(resp)
         elif path == '/api/library':
             self._json(scan_library())
         elif path == '/api/addons':
@@ -649,7 +665,19 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
         try:
-            if path == '/api/analyze':
+            if path == '/api/playback':
+                if "command" in body:
+                    # Remote sending a command → queue it for the browser
+                    with _playback_lock:
+                        _playback_cmds.append(body["command"])
+                    self._json({"ok": True})
+                else:
+                    # Browser pushing its state
+                    with _playback_lock:
+                        _playback_state.update(body)
+                    self._json({"ok": True})
+
+            elif path == '/api/analyze':
                 job = _create_job("analyze")
                 threading.Thread(target=_run_analysis, args=(job,), daemon=True).start()
                 self._json({"id": job["id"], "status": "queued"})

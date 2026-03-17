@@ -197,7 +197,7 @@ class PlaybackController {
     const track = this._queue[this._queueIndex];
     if (track && this._audio.src) {
       this._syncMediaSessionPosition();
-      return {
+      const status = {
         state: this._audio.paused ? 'paused' : 'playing',
         currentTime: this._audio.currentTime || 0,
         duration: this._audio.duration || 0,
@@ -210,9 +210,46 @@ class PlaybackController {
         queueLength: this._queue.length,
         device: null,
       };
+      this._pushState(status);
+      return status;
     }
 
+    this._pushState({ state: 'idle' });
     return { state: 'idle' };
+  }
+
+  /** Push local playback state to server, process remote commands. */
+  _pushState(status) {
+    fetch('/api/playback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(status),
+    }).catch(() => {});
+  }
+
+  /** Check for and execute remote commands. Called from the poll loop. */
+  async processRemoteCommands() {
+    try {
+      const r = await fetch('/api/playback');
+      const data = await r.json();
+      if (data.commands) {
+        for (const cmd of data.commands) {
+          this._executeCommand(cmd);
+        }
+      }
+    } catch {}
+  }
+
+  _executeCommand(cmd) {
+    switch (cmd.action) {
+      case 'toggle': this.toggle(); break;
+      case 'play':   this.resume(); break;
+      case 'pause':  this.pause(); break;
+      case 'next':   this.next(); break;
+      case 'prev':   this.prev(); break;
+      case 'seek':   this.seek(cmd.value); break;
+      case 'volume': this.volume(cmd.value); break;
+    }
   }
 
   // ── Private: local playback ──

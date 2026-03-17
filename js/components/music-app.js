@@ -543,6 +543,11 @@ class MusicApp extends HTMLElement {
         fails = 0;
         player.update(status);
 
+        // Process remote commands (phone → server → browser)
+        if (playback.mode === 'local') {
+          playback.processRemoteCommands();
+        }
+
         const track = playback.currentTrack;
         if (status.state !== 'idle' && track) {
           detail.highlightByUrl(track.url);
