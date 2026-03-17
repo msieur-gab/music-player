@@ -277,7 +277,9 @@ class MusicApp extends HTMLElement {
       const { label, desc, tracks } = e.detail;
       const detail = this.shadowRoot.getElementById('detail');
       detail.playlist = { label, desc, tracks, saved: false };
-      detail.backLabel = this._view;
+      // Use addon's display name for back button, or capitalize the view ID
+      const viewName = this._addonNames?.[this._view] || this._view;
+      detail.backLabel = viewName.charAt(0).toUpperCase() + viewName.slice(1);
       this.setAttribute('detail-open', '');
     });
 
@@ -379,6 +381,7 @@ class MusicApp extends HTMLElement {
     const rail = this.shadowRoot.getElementById('rail');
 
     this._addonViews = this._addonViews || {};
+    this._addonNames = this._addonNames || {};
 
     for (const addon of addons) {
       // Skip if already loaded
@@ -395,6 +398,7 @@ class MusicApp extends HTMLElement {
           el.style.minHeight = '0';
           this.shadowRoot.insertBefore(el, container);
           this._addonViews[addon.id] = el;
+          this._addonNames[addon.id] = addon.name;
           rail.addAddonButton(addon.id, addon.trigger, 'tab');
           // Inject theme tokens into shadow DOM
           applyTheme(el);
@@ -517,9 +521,17 @@ class MusicApp extends HTMLElement {
       const status = await playback.getStatus();
       player.update(status);
 
-      if (status.state !== 'idle') {
-        const track = playback.currentTrack;
-        detail.highlightByUrl(track ? track.url : null);
+      const track = playback.currentTrack;
+      if (status.state !== 'idle' && track) {
+        detail.highlightByUrl(track.url);
+
+        // Notify active view addon which track is playing
+        const activeView = this._addonViews?.[this._view];
+        if (activeView) {
+          activeView.dispatchEvent(new CustomEvent('highlight-track', {
+            detail: { url: track.url, trackId: track.track_id },
+          }));
+        }
       }
     }, 500);
   }

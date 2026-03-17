@@ -766,15 +766,9 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_error(404)
             return
 
-        addon_id = parts[1]
-        addon = _addons.get(addon_id)
-        if not addon:
-            self.send_error(404)
-            return
-
-        # Serve file from addon directory (backend addons serve ui/, view addons serve all)
-        rel_path = "/".join(parts[2:]) if len(parts) > 2 else addon["manifest"].get("entry", "index.html")
-        filepath = os.path.join(addon["dir"], rel_path)
+        # Serve any file under addons/ directly from disk
+        rel_path = "/".join(parts[1:])
+        filepath = os.path.join(ADDONS_DIR, rel_path)
 
         if not os.path.isfile(filepath):
             self.send_error(404)

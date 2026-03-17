@@ -198,6 +198,16 @@ class SonicSunburst extends HTMLElement {
     new MutationObserver(() => requestAnimationFrame(() => this._draw()))
       .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
+    // Highlight currently playing track (sent by main app)
+    this._playingUrl = null;
+    this.addEventListener('highlight-track', (e) => {
+      const url = e.detail?.url || null;
+      if (url !== this._playingUrl) {
+        this._playingUrl = url;
+        this._draw();
+      }
+    });
+
     this._loadTracks();
   }
 
@@ -770,11 +780,20 @@ class SonicSunburst extends HTMLElement {
 
       const wc = this._activeWedges[item.wedgeSlot].color;
       const isHov = this._hoveredItem === i;
+      const isPlaying = this._playingUrl && item.track.url === this._playingUrl;
       const isWedgeSel = this._selectedWedge === item.wedgeSlot;
-      const dimmed = (this._hoveredItem >= 0 && !isHov) || (this._selectedWedge >= 0 && !isWedgeSel);
+      const dimmed = (this._hoveredItem >= 0 && !isHov && !isPlaying) || (this._selectedWedge >= 0 && !isWedgeSel);
       const distFade = 1 - (item.ringIdx / RINGS.length) * 0.5;
-      const alpha = dimmed ? 0.06 : (isHov ? 1 : (isWedgeSel ? 0.7 : 0.4 * distFade));
-      const dotR = isHov ? 5 : 2.5 + item.sharedStrength * 2;
+      const alpha = dimmed ? 0.06 : (isHov || isPlaying ? 1 : (isWedgeSel ? 0.7 : 0.4 * distFade));
+      const dotR = isHov ? 5 : (isPlaying ? 6 : 2.5 + item.sharedStrength * 2);
+
+      if (isPlaying) {
+        // Playing indicator: pulsing ring
+        ctx.beginPath(); ctx.arc(bx, by, dotR + 8, 0, Math.PI * 2);
+        ctx.fillStyle = rgb(wc, 0.15); ctx.fill();
+        ctx.beginPath(); ctx.arc(bx, by, dotR + 4, 0, Math.PI * 2);
+        ctx.strokeStyle = rgb(wc, 0.5); ctx.lineWidth = 1.5 / zoom; ctx.stroke();
+      }
 
       if (isHov) {
         ctx.beginPath(); ctx.arc(bx, by, dotR + 6, 0, Math.PI * 2);
@@ -787,7 +806,7 @@ class SonicSunburst extends HTMLElement {
       ctx.beginPath(); ctx.arc(bx, by, dotR, 0, Math.PI * 2);
       ctx.fillStyle = rgb(wc, alpha); ctx.fill();
 
-      const showLabel = isHov || (showAllLabels && !dimmed) || (showSomeLabels && item.ringIdx <= 1 && !dimmed);
+      const showLabel = isHov || isPlaying || (showAllLabels && !dimmed) || (showSomeLabels && item.ringIdx <= 1 && !dimmed);
       if (showLabel) {
         ctx.save();
         ctx.translate(bx, by);
