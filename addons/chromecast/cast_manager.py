@@ -141,10 +141,10 @@ class CastManager:
                 return {"error": "Device not found"}
             cc.wait(timeout=10)
 
-            # Stop previous device if switching
+            # Quit app on previous device if switching
             if self._active and self._active.uuid != cc.uuid:
                 try:
-                    self._active.media_controller.stop()
+                    self._active.quit_app()
                 except Exception:
                     pass
 
