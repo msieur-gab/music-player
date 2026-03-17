@@ -23,10 +23,13 @@ class CastManager:
         self._last_state = None  # last player state
         self._last_ts = 0        # timestamp of last status read
         self._watch_gen = 0      # generation counter to kill old watchers
+        self._watch_stop = threading.Event()  # signal current watcher to exit
 
     # -- Discovery --
 
     def start_discovery(self):
+        if self._browser:
+            return  # already running
         threading.Thread(target=self._discover, daemon=True).start()
 
     def _discover(self):
@@ -181,23 +184,25 @@ class CastManager:
 
     def _watch(self, cc):
         """Auto-advance queue when track finishes."""
-        gen = self._watch_gen  # capture current generation
+        # Signal any previous watcher to exit immediately
+        self._watch_stop.set()
+        self._watch_stop = threading.Event()
+        stop = self._watch_stop  # capture for this watcher
+        gen = self._watch_gen
 
         def _loop():
             mc = cc.media_controller
             was_playing = False
-            while gen == self._watch_gen and self._active and self._active.uuid == cc.uuid:
-                time.sleep(1)
-                if gen != self._watch_gen:
-                    return  # newer watcher took over
+            while not stop.is_set() and gen == self._watch_gen and self._active and self._active.uuid == cc.uuid:
+                stop.wait(1)  # sleeps up to 1s but wakes instantly on stop
+                if stop.is_set() or gen != self._watch_gen:
+                    return
                 try:
                     ps = mc.status.player_state
                     if ps == "PLAYING":
                         was_playing = True
                     elif was_playing and ps in ("IDLE", "UNKNOWN"):
                         was_playing = False
-                        if gen != self._watch_gen:
-                            return
                         if self._qi < len(self._queue) - 1:
                             self._qi += 1
                             self._play_current(cc)
@@ -284,5 +289,14 @@ class CastManager:
             return {"state": "idle"}
 
     def stop(self):
+        self._watch_stop.set()
         if self._browser:
             self._browser.stop_discovery()
+        with self._lock:
+            for cc in self._devices.values():
+                try:
+                    cc.disconnect()
+                except Exception:
+                    pass
+            self._devices.clear()
+        self._active = None

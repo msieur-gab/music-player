@@ -313,6 +313,14 @@ class MusicApp extends HTMLElement {
 
   disconnectedCallback() {
     if (this._pollId) clearInterval(this._pollId);
+    if (this._themeUnsub) {
+      this._themeUnsub();
+      this._themeUnsub = null;
+    }
+    if (this._resumePoll) {
+      document.removeEventListener('click', this._resumePoll);
+      document.removeEventListener('keydown', this._resumePoll);
+    }
   }
 
   // ── View routing ──
@@ -412,9 +420,9 @@ class MusicApp extends HTMLElement {
       }
     }
 
-    // Re-apply theme to all view addons when theme toggles
-    if (Object.keys(this._addonViews).length > 0) {
-      onThemeChange(() => applyThemeAll(Object.values(this._addonViews)));
+    // Re-apply theme to all view addons when theme toggles (register once)
+    if (Object.keys(this._addonViews).length > 0 && !this._themeUnsub) {
+      this._themeUnsub = onThemeChange(() => applyThemeAll(Object.values(this._addonViews)));
     }
   }
 
@@ -514,24 +522,41 @@ class MusicApp extends HTMLElement {
   // ── UI Update Loop ──
 
   _startUpdateLoop() {
+    let fails = 0;
+    let paused = false;
+
+    // Resume polling on any user interaction after server failure
+    this._resumePoll = () => {
+      if (paused) { fails = 0; paused = false; }
+    };
+    document.addEventListener('click', this._resumePoll);
+    document.addEventListener('keydown', this._resumePoll);
+
     this._pollId = setInterval(async () => {
-      const player = this.shadowRoot.getElementById('player');
-      const detail = this.shadowRoot.getElementById('detail');
+      if (paused) return;
 
-      const status = await playback.getStatus();
-      player.update(status);
+      try {
+        const player = this.shadowRoot.getElementById('player');
+        const detail = this.shadowRoot.getElementById('detail');
 
-      const track = playback.currentTrack;
-      if (status.state !== 'idle' && track) {
-        detail.highlightByUrl(track.url);
+        const status = await playback.getStatus();
+        fails = 0;
+        player.update(status);
 
-        // Notify active view addon which track is playing
-        const activeView = this._addonViews?.[this._view];
-        if (activeView) {
-          activeView.dispatchEvent(new CustomEvent('highlight-track', {
-            detail: { url: track.url, trackId: track.track_id },
-          }));
+        const track = playback.currentTrack;
+        if (status.state !== 'idle' && track) {
+          detail.highlightByUrl(track.url);
+
+          // Notify active view addon which track is playing
+          const activeView = this._addonViews?.[this._view];
+          if (activeView) {
+            activeView.dispatchEvent(new CustomEvent('highlight-track', {
+              detail: { url: track.url, trackId: track.track_id },
+            }));
+          }
         }
+      } catch {
+        if (++fails >= 3) paused = true;
       }
     }, 500);
   }

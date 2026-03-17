@@ -11,6 +11,7 @@ import os
 import sys
 import json
 import uuid
+import signal
 import socket
 import mimetypes
 import importlib
@@ -99,6 +100,12 @@ jobs_lock = threading.Lock()
 
 
 def _create_job(url):
+    # Purge completed jobs before creating a new one
+    with jobs_lock:
+        stale = [jid for jid, j in jobs.items() if j["done"]]
+        for jid in stale:
+            del jobs[jid]
+
     job_id = uuid.uuid4().hex[:8]
     job = {
         "id": job_id, "url": url, "status": "queued",
@@ -741,16 +748,16 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header('Connection', 'keep-alive')
         self.end_headers()
 
-        cursor = 0
         while True:
             with job["condition"]:
-                while cursor >= len(job["events"]) and not job["done"]:
+                while not job["events"] and not job["done"]:
                     job["condition"].wait(timeout=5)
-                new = job["events"][cursor:]
-                cursor = len(job["events"])
+                # Drain: take all pending events and clear the list
+                batch = job["events"][:]
+                job["events"].clear()
                 done = job["done"]
 
-            for event in new:
+            for event in batch:
                 try:
                     self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
                     self.wfile.flush()
@@ -916,9 +923,8 @@ if __name__ == '__main__':
     _load_addons()
 
     server = ThreadedServer(('0.0.0.0', PORT), Handler)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
+
+    def _shutdown(signum=None, frame=None):
         print("\nShutting down...")
         for shutdown_fn in _addon_shutdowns:
             try:
@@ -926,3 +932,11 @@ if __name__ == '__main__':
             except Exception:
                 pass
         server.shutdown()
+
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        _shutdown()

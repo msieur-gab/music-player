@@ -478,6 +478,13 @@ class SettingsPanel extends HTMLElement {
     }
   }
 
+  disconnectedCallback() {
+    if (this._analysisSource) {
+      this._analysisSource.close();
+      this._analysisSource = null;
+    }
+  }
+
   async _startAnalysis() {
     const $ = id => this.shadowRoot.getElementById(id);
     const btn = $('analyze-btn');
@@ -487,9 +494,16 @@ class SettingsPanel extends HTMLElement {
     btn.textContent = 'Analyzing...';
     progress.innerHTML = 'Starting analysis...';
 
+    // Close any prior EventSource before starting a new one
+    if (this._analysisSource) {
+      this._analysisSource.close();
+      this._analysisSource = null;
+    }
+
     try {
       const { id } = await startAnalysis();
       const source = streamAnalysis(id);
+      this._analysisSource = source;
 
       source.addEventListener('message', (e) => {
         try {
@@ -497,11 +511,13 @@ class SettingsPanel extends HTMLElement {
 
           if (data.status === 'complete') {
             source.close();
+            this._analysisSource = null;
             progress.innerHTML = `<span class="done">${data.message}</span>`;
             btn.disabled = false;
             btn.textContent = 'Analyze library';
           } else if (data.status === 'error') {
             source.close();
+            this._analysisSource = null;
             progress.textContent = data.message || 'Analysis failed';
             btn.disabled = false;
             btn.textContent = 'Analyze library';
@@ -515,6 +531,7 @@ class SettingsPanel extends HTMLElement {
 
       source.addEventListener('error', () => {
         source.close();
+        this._analysisSource = null;
         progress.textContent = 'Connection lost';
         btn.disabled = false;
         btn.textContent = 'Analyze library';

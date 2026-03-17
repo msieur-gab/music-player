@@ -328,6 +328,13 @@ class DownloadPanel extends HTMLElement {
     });
   }
 
+  disconnectedCallback() {
+    for (const state of this._activeJobs.values()) {
+      if (state.source) state.source.close();
+    }
+    this._activeJobs.clear();
+  }
+
   async _start(url) {
     const jobEl = this._createJobEl(url);
     this.shadowRoot.getElementById('jobs').prepend(jobEl);
