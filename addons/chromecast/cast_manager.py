@@ -1,6 +1,8 @@
 """
 Chromecast discovery + control via pychromecast.
-Extracted from server.py to keep concerns separated.
+
+Media status via event listener (no polling threads).
+Queue managed server-side — play one track at a time, auto-advance on finish.
 """
 
 import socket
@@ -17,19 +19,22 @@ class CastManager:
         self._lock = threading.Lock()
         self._active = None      # currently casting Chromecast
         self._queue = []
-        self._qi = -1            # queue index
-        self._base_url = None    # set by frontend on first cast
-        self._last_time = 0      # last known currentTime
-        self._last_state = None  # last player state
-        self._last_ts = 0        # timestamp of last status read
-        self._watch_gen = 0      # generation counter to kill old watchers
-        self._watch_stop = threading.Event()  # signal current watcher to exit
+        self._qi = -1
+        self._base_url = None
+
+        # Status cache — updated by listener
+        self._status_lock = threading.Lock()
+        self._player_state = "IDLE"
+        self._current_time = 0
+        self._duration = 0
+        self._last_update_ts = 0
+        self._was_playing = False  # for auto-advance detection
 
     # -- Discovery --
 
     def start_discovery(self):
         if self._browser:
-            return  # already running
+            return
         threading.Thread(target=self._discover, daemon=True).start()
 
     def _discover(self):
@@ -52,7 +57,6 @@ class CastManager:
 
     def _scan_for_chromecasts(self):
         """Find devices with port 8009 open on reachable subnets."""
-        # Step 1: find active subnets by probing gateways
         gateways = []
         gw_lock = threading.Lock()
 
@@ -81,7 +85,6 @@ class CastManager:
 
         print(f"  Subnets: {', '.join(gw.rsplit('.', 1)[0] + '.x' for gw in sorted(gateways))}")
 
-        # Step 2: scan those subnets for port 8009
         found = []
         found_lock = threading.Lock()
 
@@ -137,78 +140,108 @@ class CastManager:
             if not cc:
                 return {"error": "Device not found"}
             cc.wait(timeout=10)
+
+            # Stop previous device if switching
+            if self._active and self._active.uuid != cc.uuid:
+                try:
+                    self._active.media_controller.stop()
+                except Exception:
+                    pass
+
             self._active = cc
             self._queue = queue or [track]
             self._qi = queue_index
-            # Kill old watcher before starting new one
-            self._watch_gen += 1
-            self._play_current(cc)
-            self._watch(cc)
+
+            # Register status listener (pychromecast deduplicates)
+            cc.media_controller.register_status_listener(self)
+
+            self._play_track(cc, self._qi)
             return {"ok": True, "device": cc.name}
         except Exception as e:
             return {"error": str(e)}
 
-    def _play_current(self, cc):
-        if self._qi < 0 or self._qi >= len(self._queue):
+    def _play_track(self, cc, index):
+        """Play a single track by queue index."""
+        if index < 0 or index >= len(self._queue):
             return
-        track = self._queue[self._qi]
-        url = track.get("url", "")
-        base = self._base_url or f"http://{self._get_lan_ip()}:{self._port}"
-        if url.startswith("/"):
-            url = base + url
+        self._qi = index
+        track = self._queue[index]
+        url, base = self._resolve_url(track)
+        title = track.get("title", "")
+        artist = track.get("artist", "")
+        album = track.get("album", "")
+        cover = track.get("cover")
+        thumb = (base + cover if cover and cover.startswith("/") else cover) or None
+        content_type = "audio/mp4" if url.lower().endswith(".m4a") else "audio/mpeg"
 
-        # Warn if media URL uses a container IP — Chromecasts can't reach it
-        if "100.115." in url or "localhost" in url or "127.0.0.1" in url:
-            print(f"  WARNING: Media URL may be unreachable by Chromecast: {url}")
-            print(f"  Set base_url via the frontend WiFi IP prompt or use a LAN IP.")
-
-        print(f"  Casting to {cc.name}: {url}")
-        print(f"  Base URL: {base}")
-
-        mc = cc.media_controller
         meta = {
             "metadataType": 3,
-            "title": track.get("title", ""),
-            "artist": track.get("artist", ""),
-            "albumName": track.get("album", ""),
+            "title": title,
+            "artist": artist,
+            "albumName": album,
         }
-        cover = track.get("cover")
-        if cover:
-            meta["images"] = [{"url": base + cover if cover.startswith("/") else cover}]
+        if thumb:
+            meta["images"] = [{"url": thumb}]
 
-        mc.play_media(url, "audio/mpeg", metadata=meta)
+        if "100.115." in url or "localhost" in url or "127.0.0.1" in url:
+            print(f"  WARNING: Media URL may be unreachable by Chromecast: {url}")
+
+        print(f"  Casting to {cc.name}: {title} ({index + 1}/{len(self._queue)})")
+
+        mc = cc.media_controller
+        mc.play_media(
+            url, content_type,
+            title=title, thumb=thumb,
+            stream_type="BUFFERED",
+            metadata=meta,
+        )
+        with self._status_lock:
+            self._was_playing = False
         try:
             mc.block_until_active(timeout=10)
         except Exception:
             print(f"  Cast media did not become active within 10s")
 
-    def _watch(self, cc):
-        """Auto-advance queue when track finishes."""
-        # Signal any previous watcher to exit immediately
-        self._watch_stop.set()
-        self._watch_stop = threading.Event()
-        stop = self._watch_stop  # capture for this watcher
-        gen = self._watch_gen
+    def _resolve_url(self, track):
+        """Build absolute URL for a track."""
+        url = track.get("url", "")
+        base = self._base_url or f"http://{self._get_lan_ip()}:{self._port}"
+        if url.startswith("/"):
+            url = base + url
+        return url, base
 
-        def _loop():
-            mc = cc.media_controller
-            was_playing = False
-            while not stop.is_set() and gen == self._watch_gen and self._active and self._active.uuid == cc.uuid:
-                stop.wait(1)  # sleeps up to 1s but wakes instantly on stop
-                if stop.is_set() or gen != self._watch_gen:
-                    return
-                try:
-                    ps = mc.status.player_state
-                    if ps == "PLAYING":
-                        was_playing = True
-                    elif was_playing and ps in ("IDLE", "UNKNOWN"):
-                        was_playing = False
-                        if self._qi < len(self._queue) - 1:
-                            self._qi += 1
-                            self._play_current(cc)
-                except Exception:
-                    break
-        threading.Thread(target=_loop, daemon=True).start()
+    # -- Media status listener (called by pychromecast on events) --
+
+    def new_media_status(self, status):
+        """Called by pychromecast when media status changes."""
+        with self._status_lock:
+            prev_state = self._player_state
+            self._player_state = status.player_state or "IDLE"
+            self._current_time = status.current_time or 0
+            self._duration = status.duration or 0
+            self._last_update_ts = time.time()
+
+            if self._player_state == "PLAYING":
+                self._was_playing = True
+
+            # Auto-advance: was playing, now idle → track finished
+            should_advance = (
+                self._was_playing
+                and self._player_state == "IDLE"
+                and self._qi < len(self._queue) - 1
+            )
+            if should_advance:
+                self._was_playing = False
+
+        # Advance outside the lock to avoid deadlock
+        if should_advance:
+            cc = self._active
+            if cc:
+                self._play_track(cc, self._qi + 1)
+
+    def load_media_failed(self, queue_item_id, error_code):
+        """Called by pychromecast when media fails to load."""
+        print(f"  Cast media load failed: item {queue_item_id}, error {error_code}")
 
     # -- Control --
 
@@ -218,32 +251,42 @@ class CastManager:
             return {"error": "No active device"}
         mc = cc.media_controller
         try:
-            if action == "play":      mc.play()
-            elif action == "pause":   mc.pause()
+            if action == "play":
+                mc.play()
+            elif action == "pause":
+                mc.pause()
             elif action == "toggle":
-                s = mc.status
-                if s and s.player_state == "PLAYING":
+                with self._status_lock:
+                    state = self._player_state
+                if state == "PLAYING":
                     mc.pause()
                 else:
                     mc.play()
             elif action == "stop":
-                mc.stop()
+                with self._status_lock:
+                    self._was_playing = False
+                    self._player_state = "IDLE"
+                try:
+                    mc.stop()
+                except Exception:
+                    pass
+                try:
+                    cc.quit_app()
+                except Exception:
+                    pass
                 self._active = None
+                self._queue = []
+                self._qi = -1
             elif action == "next":
                 if self._qi < len(self._queue) - 1:
-                    self._watch_gen += 1
-                    self._qi += 1
-                    self._play_current(cc)
-                    self._watch(cc)
+                    self._play_track(cc, self._qi + 1)
             elif action == "prev":
-                s = mc.status
-                if s and s.current_time and s.current_time > 3:
+                with self._status_lock:
+                    ct = self._current_time
+                if ct and ct > 3:
                     mc.seek(0)
                 elif self._qi > 0:
-                    self._watch_gen += 1
-                    self._qi -= 1
-                    self._play_current(cc)
-                    self._watch(cc)
+                    self._play_track(cc, self._qi - 1)
             elif action == "seek" and value is not None:
                 mc.seek(float(value))
             elif action == "volume" and value is not None:
@@ -257,25 +300,23 @@ class CastManager:
         if not cc:
             return {"state": "idle"}
         try:
-            mc = cc.media_controller
-            s = mc.status
             track = self._queue[self._qi] if 0 <= self._qi < len(self._queue) else {}
 
-            # Interpolate: pychromecast only updates time on events
-            raw_time = s.current_time or 0
-            now = time.time()
-            if raw_time != self._last_time or s.player_state != self._last_state:
-                self._last_time = raw_time
-                self._last_state = s.player_state
-                self._last_ts = now
+            with self._status_lock:
+                state = self._player_state
+                raw_time = self._current_time
+                duration = self._duration
+                last_ts = self._last_update_ts
+
+            # Interpolate position between listener updates
             ct = raw_time
-            if s.player_state == "PLAYING" and self._last_ts:
-                ct = raw_time + (now - self._last_ts)
+            if state == "PLAYING" and last_ts:
+                ct = raw_time + (time.time() - last_ts)
 
             return {
-                "state": (s.player_state or "UNKNOWN").lower(),
+                "state": state.lower(),
                 "currentTime": ct,
-                "duration": s.duration or 0,
+                "duration": duration,
                 "volume": cc.status.volume_level if cc.status else 1,
                 "title": track.get("title", ""),
                 "artist": track.get("artist", ""),
@@ -289,7 +330,11 @@ class CastManager:
             return {"state": "idle"}
 
     def stop(self):
-        self._watch_stop.set()
+        if self._active:
+            try:
+                self._active.media_controller.stop()
+            except Exception:
+                pass
         if self._browser:
             self._browser.stop_discovery()
         with self._lock:

@@ -134,12 +134,18 @@ class PlaybackController {
 
   async selectDevice(device) {
     if (!device || device.id === 'local') {
-      if (this._mode === 'cast') controlPlayback('stop');
+      if (this._mode === 'cast') {
+        await controlPlayback('stop').catch(() => {});
+      }
       this._selectedDevice = null;
       this._mode = 'local';
       if (this._queueIndex >= 0 && this._queue.length) this._playLocal();
       return;
     }
+
+    // Switching to cast — stop local audio first
+    this._audio.pause();
+    this._audio.src = '';
 
     this._selectedDevice = device;
     this._mode = 'cast';
@@ -147,9 +153,7 @@ class PlaybackController {
 
     if (this._queueIndex >= 0 && this._queue.length) {
       const ok = await this._castQueue(this._queueIndex);
-      if (ok) {
-        this._audio.pause();
-      } else {
+      if (!ok) {
         this._mode = 'local';
         this._playLocal();
       }

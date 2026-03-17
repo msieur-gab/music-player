@@ -924,14 +924,23 @@ if __name__ == '__main__':
 
     server = ThreadedServer(('0.0.0.0', PORT), Handler)
 
+    _state = {"shutting_down": False}
+
     def _shutdown(signum=None, frame=None):
+        if _state["shutting_down"]:
+            print("\nForce exit.")
+            os._exit(1)
+        _state["shutting_down"] = True
         print("\nShutting down...")
         for shutdown_fn in _addon_shutdowns:
             try:
                 shutdown_fn()
             except Exception:
                 pass
-        server.shutdown()
+        # Run in thread — server.shutdown() blocks until request threads finish
+        threading.Thread(target=server.shutdown, daemon=True).start()
+        # Give threads 2s to finish, then force exit
+        threading.Timer(2.0, lambda: os._exit(0)).start()
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
