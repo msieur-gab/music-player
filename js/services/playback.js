@@ -218,7 +218,7 @@ class PlaybackController {
     return { state: 'idle' };
   }
 
-  /** Push local playback state to server, process remote commands. */
+  /** Push local playback state to server for remote. */
   _pushState(status) {
     fetch('/api/playback', {
       method: 'POST',
@@ -227,29 +227,30 @@ class PlaybackController {
     }).catch(() => {});
   }
 
-  /** Check for and execute remote commands. Called from the poll loop. */
-  async processRemoteCommands() {
-    try {
-      const r = await fetch('/api/playback');
-      const data = await r.json();
-      if (data.commands) {
-        for (const cmd of data.commands) {
-          this._executeCommand(cmd);
+  /** Connect SSE stream for instant remote commands. */
+  connectRemoteCommands() {
+    if (this._remoteSse) return;
+    this._remoteSse = new EventSource('/api/playback/commands');
+    this._remoteSse.addEventListener('message', (e) => {
+      try {
+        const cmd = JSON.parse(e.data);
+        switch (cmd.action) {
+          case 'toggle': this.toggle(); break;
+          case 'play':   this.resume(); break;
+          case 'pause':  this.pause(); break;
+          case 'next':   this.next(); break;
+          case 'prev':   this.prev(); break;
+          case 'seek':   this.seek(cmd.value); break;
+          case 'volume': this.volume(cmd.value); break;
         }
-      }
-    } catch {}
-  }
-
-  _executeCommand(cmd) {
-    switch (cmd.action) {
-      case 'toggle': this.toggle(); break;
-      case 'play':   this.resume(); break;
-      case 'pause':  this.pause(); break;
-      case 'next':   this.next(); break;
-      case 'prev':   this.prev(); break;
-      case 'seek':   this.seek(cmd.value); break;
-      case 'volume': this.volume(cmd.value); break;
-    }
+      } catch {}
+    });
+    this._remoteSse.addEventListener('error', () => {
+      // Reconnect after a delay
+      this._remoteSse.close();
+      this._remoteSse = null;
+      setTimeout(() => this.connectRemoteCommands(), 2000);
+    });
   }
 
   // ── Private: local playback ──

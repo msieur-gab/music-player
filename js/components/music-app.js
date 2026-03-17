@@ -309,6 +309,7 @@ class MusicApp extends HTMLElement {
     this._loadLibrary();
     trackStore.load(); // preload shared track data (non-blocking)
     this._startUpdateLoop();
+    playback.connectRemoteCommands();
   }
 
   disconnectedCallback() {
@@ -542,11 +543,6 @@ class MusicApp extends HTMLElement {
         const status = await playback.getStatus();
         fails = 0;
         player.update(status);
-
-        // Process remote commands (phone → server → browser)
-        if (playback.mode === 'local') {
-          playback.processRemoteCommands();
-        }
 
         const track = playback.currentTrack;
         if (status.state !== 'idle' && track) {
