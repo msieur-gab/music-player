@@ -1,16 +1,17 @@
-"""Soniq audio feature tags -- read/write feature signatures in m4a and mp3 files.
+"""Soniq audio feature tags — read/write feature signatures in m4a and mp3 files.
 
-Stores extracted audio features directly in the file's metadata as JSON,
-making the library fully portable. On startup, features can be loaded from
-tags in seconds instead of re-running librosa (hours).
+Stores extracted audio features + classifier outputs directly in the file's
+metadata as JSON, making the library fully portable. On startup, features can
+be loaded from tags in seconds instead of re-running librosa (hours).
 
-Schema v0.2:
+Schema v0.6:
   {
     "src": "soniq",
-    "v": "0.2",
-    "at": "2026-03-09T20:15:00Z",
-    "s": { 15 scalar features },
-    "vec": { mfcc_m, mfcc_s, contrast, chroma, tonnetz }
+    "v": "0.6",
+    "at": "2026-03-17T...",
+    "s": { 25 scalar features },
+    "vec": { mfcc_m, chroma, tonnetz },
+    "cls": { classifier outputs }
   }
 
 Storage:
@@ -24,27 +25,47 @@ from datetime import datetime, timezone
 
 log = logging.getLogger(__name__)
 
-CURRENT_VERSION = "0.2"
+CURRENT_VERSION = "0.6"
 TAG_DESC = "com.soniq:features"
 MP4_ATOM = "----:com.soniq:features"
 
 SCALAR_KEYS = [
     "duration", "tempo", "key", "mode",
-    "rms_mean", "rms_max", "rms_variance", "dynamic_range",
-    "centroid_mean", "flatness_mean", "spectral_flux",
-    "onset_strength", "beat_strength", "vocal_proxy", "zcr_mean",
+    "rms_mean", "rms_variance",
+    "centroid_mean", "centroid_std", "bandwidth_std", "flatness_mean",
+    "spectral_flux", "flux_std",
+    "onset_strength", "beat_strength",
+    "treble_ratio", "mfcc_delta_var", "mod_crest",
+    "harm_energy", "perc_energy", "harm_fraction",
+    "beat_regularity", "rhythm_complexity", "plp_stability", "onset_rate",
+    "chroma_major_corr",
 ]
 
 SCALAR_SHORT = {
-    "duration": "duration", "tempo": "tempo", "key": "key", "mode": "mode",
-    "rms_mean": "rms_mean", "rms_max": "rms_max", "rms_variance": "rms_var",
-    "dynamic_range": "dyn_range", "centroid_mean": "centroid",
-    "flatness_mean": "flatness", "spectral_flux": "flux",
+    "duration": "dur", "tempo": "tempo", "key": "key", "mode": "mode",
+    "rms_mean": "rms", "rms_variance": "rms_var",
+    "centroid_mean": "centroid", "centroid_std": "cent_std",
+    "bandwidth_std": "bw_std", "flatness_mean": "flat",
+    "spectral_flux": "flux", "flux_std": "flux_std",
     "onset_strength": "onset", "beat_strength": "beat",
-    "vocal_proxy": "vocal", "zcr_mean": "zcr",
+    "treble_ratio": "treble", "mfcc_delta_var": "mfcc_dv",
+    "mod_crest": "mod_cr",
+    "harm_energy": "harm_e", "perc_energy": "perc_e",
+    "harm_fraction": "harm_f",
+    "beat_regularity": "beat_reg", "rhythm_complexity": "rhy_cplx",
+    "plp_stability": "plp_stab", "onset_rate": "onset_r",
+    "chroma_major_corr": "maj_corr",
 }
 
 SCALAR_FULL = {v: k for k, v in SCALAR_SHORT.items()}
+
+# Classifier keys stored in cls section
+CLS_KEYS = [
+    "arousal", "valence", "happy", "sad", "relaxed", "aggressive",
+    "danceable", "party", "energetic", "still", "hypnotic", "varied",
+    "instrumental", "vocal", "brilliant", "warm", "radiant", "somber",
+    "contemplative", "restless",
+]
 
 
 def _round(val, decimals=4):
@@ -53,8 +74,8 @@ def _round(val, decimals=4):
     return val
 
 
-def features_to_tag(features):
-    """Convert extractor output dict to tag JSON string."""
+def features_to_tag(features, classifications=None):
+    """Convert extractor output dict + classifier outputs to tag JSON string."""
     tag = {
         "src": "soniq",
         "v": CURRENT_VERSION,
@@ -69,14 +90,22 @@ def features_to_tag(features):
 
     if "mfcc_mean" in features:
         tag["vec"]["mfcc_m"] = [_round(v) for v in features["mfcc_mean"]]
-    if "mfcc_std" in features:
-        tag["vec"]["mfcc_s"] = [_round(v) for v in features["mfcc_std"]]
-    if "contrast_mean" in features:
-        tag["vec"]["contrast"] = [_round(v) for v in features["contrast_mean"]]
     if "chroma_mean" in features:
         tag["vec"]["chroma"] = [_round(v) for v in features["chroma_mean"]]
     if "tonnetz_mean" in features:
         tag["vec"]["tonnetz"] = [_round(v) for v in features["tonnetz_mean"]]
+
+    if classifications:
+        cls = {}
+        for k in CLS_KEYS:
+            if k in classifications:
+                cls[k] = _round(classifications[k])
+        # Store energy components and hypnotic path as sub-dicts
+        if "_energy_components" in classifications:
+            cls["nrg"] = {k: _round(v) for k, v in classifications["_energy_components"].items()}
+        if "_hypnotic_path" in classifications:
+            cls["hypnotic_path"] = classifications["_hypnotic_path"]
+        tag["cls"] = cls
 
     return json.dumps(tag, separators=(",", ":"))
 
@@ -84,16 +113,17 @@ def features_to_tag(features):
 def tag_to_features(tag_json):
     """Parse tag JSON string back to extractor-compatible feature dict.
 
-    Returns (features_dict, version_str) or (None, None) on failure.
+    Returns (features_dict, classifications_dict, version_str) or
+    (None, None, None) on failure.
     """
     try:
         tag = json.loads(tag_json)
     except (json.JSONDecodeError, TypeError):
-        return None, None
+        return None, None, None
 
     version = tag.get("v")
     if not version:
-        return None, None
+        return None, None, None
 
     features = {}
 
@@ -105,21 +135,30 @@ def tag_to_features(tag_json):
     vec = tag.get("vec", {})
     if "mfcc_m" in vec:
         features["mfcc_mean"] = vec["mfcc_m"]
-    if "mfcc_s" in vec:
-        features["mfcc_std"] = vec["mfcc_s"]
-    if "contrast" in vec:
-        features["contrast_mean"] = vec["contrast"]
     if "chroma" in vec:
         features["chroma_mean"] = vec["chroma"]
     if "tonnetz" in vec:
         features["tonnetz_mean"] = vec["tonnetz"]
 
-    return features, version
+    # Parse classifier outputs
+    classifications = None
+    cls = tag.get("cls")
+    if cls:
+        classifications = {}
+        for k in CLS_KEYS:
+            if k in cls:
+                classifications[k] = cls[k]
+        if "nrg" in cls:
+            classifications["_energy_components"] = cls["nrg"]
+        if "hypnotic_path" in cls:
+            classifications["_hypnotic_path"] = cls["hypnotic_path"]
+
+    return features, classifications, version
 
 
-def write_tag(filepath, features):
+def write_tag(filepath, features, classifications=None):
     """Write Soniq features tag to an audio file (m4a or mp3)."""
-    tag_json = features_to_tag(features)
+    tag_json = features_to_tag(features, classifications)
     ext = filepath.lower().rsplit(".", 1)[-1] if "." in filepath else ""
 
     try:
@@ -139,7 +178,8 @@ def write_tag(filepath, features):
 def read_tag(filepath):
     """Read Soniq features tag from an audio file.
 
-    Returns (features_dict, version_str) or (None, None) if no tag found.
+    Returns (features_dict, classifications_dict, version_str) or
+    (None, None, None) if no tag found.
     """
     ext = filepath.lower().rsplit(".", 1)[-1] if "." in filepath else ""
 
@@ -149,19 +189,19 @@ def read_tag(filepath):
         elif ext == "mp3":
             tag_json = _read_mp3(filepath)
         else:
-            return None, None
+            return None, None, None
 
         if tag_json:
             return tag_to_features(tag_json)
     except Exception as e:
         log.debug("Failed to read tag from %s: %s", filepath, e)
 
-    return None, None
+    return None, None, None
 
 
 def has_current_tag(filepath):
     """Check if a file has a Soniq tag with the current version."""
-    _, version = read_tag(filepath)
+    _, _, version = read_tag(filepath)
     return version == CURRENT_VERSION
 
 

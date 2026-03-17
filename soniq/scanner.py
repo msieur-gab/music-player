@@ -1,8 +1,11 @@
-"""Library scanning -- find audio files, extract features, populate DB.
+"""Library scanning — find audio files, extract features, classify, populate DB.
 
-Reads features from Soniq tags when available (instant), falls back to
-librosa extraction (slow). Writes tags back after extraction so the next
-scan is fast.
+Pipeline per track:
+  1. Check for v0.6 Soniq tag with cls section → fast path (insert directly)
+  2. Otherwise: extract features → classify → insert + write tag back
+
+Extraction runs in ProcessPool (CPU-bound librosa).
+Classification runs in main process (~3ms per track, pure Python).
 """
 
 import os
@@ -12,6 +15,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from .db import _connect, insert_track, update_norm_ranges
 from .extractor import extract_track_features
 from .tags import read_tag, write_tag, CURRENT_VERSION
+from .classifiers import predict_all
 
 
 def analyze_library(music_root, on_progress=None, workers=4):
@@ -32,11 +36,12 @@ def analyze_library(music_root, on_progress=None, workers=4):
             skipped += 1
             continue
 
-        feats, version = read_tag(path)
-        if feats and version == CURRENT_VERSION:
+        feats, cls, version = read_tag(path)
+        if feats and version == CURRENT_VERSION and cls:
+            # Fast path: v0.6 tag with classifier outputs
             insert_track(
                 conn, track_id, artist, album, title,
-                os.path.relpath(path, music_root), feats,
+                os.path.relpath(path, music_root), feats, cls,
             )
             from_tags += 1
         else:
@@ -59,11 +64,13 @@ def analyze_library(music_root, on_progress=None, workers=4):
             try:
                 feats = future.result()
                 if feats:
+                    # Classification in main process (~3ms)
+                    cls = predict_all(feats)
                     insert_track(
                         conn, track_id, artist, album, title,
-                        os.path.relpath(path, music_root), feats,
+                        os.path.relpath(path, music_root), feats, cls,
                     )
-                    write_tag(path, feats)
+                    write_tag(path, feats, cls)
                     analyzed += 1
             except Exception as e:
                 print(f"  Error extracting {title}: {e}")
@@ -88,7 +95,7 @@ def analyze_library(music_root, on_progress=None, workers=4):
 
 
 def migrate_from_json(music_root):
-    """Legacy cleanup -- remove old JSON feature files."""
+    """Legacy cleanup — remove old JSON feature files."""
     for suffix in ("", ".bak"):
         path = os.path.join(music_root, f".audio_features.json{suffix}")
         if os.path.isfile(path):

@@ -1,48 +1,130 @@
-"""Audio feature extraction using librosa with multi-point sampling.
+"""Audio feature extraction — v0.6 trimmed.
 
-Per track -- 15 scalar features + 5 vector features (66 dims total):
-  Scalars: duration, tempo, key, mode, rms_mean (dB), rms_max, rms_variance,
-           dynamic_range, centroid_mean (Hz), flatness_mean, spectral_flux,
-           onset_strength, beat_strength, vocal_proxy, zcr_mean
-  Vectors: mfcc_mean (13), mfcc_std (13), contrast_mean (7),
-           chroma_mean (12), tonnetz_mean (6) -- stored as JSON
+Multi-point sampling (3 x 10s segments at 15%, 50%, 85% of track).
+Single STFT per segment, reused for all spectral features.
 
-Multi-point sampling: 3 x 10s segments at 15%, 50%, 85% of track duration.
-Total audio analyzed per track: ~30s (vs full-track = faster, representative).
+Audio loading via ffmpeg direct decode — no audioread dependency
+(deprecated in librosa 0.10, removed in 1.0). ffmpeg decodes m4a/AAC
+natively, outputs float32 PCM at 22050 Hz mono.
+
+v0.6: removed unused extractions (rolloff, zcr, vocal_proxy, spectral
+higher-order moments, delta2 MFCCs, contrast, pYIN). Saves ~2s/track.
+Tonnetz kept for future time-series harmonic analysis.
 """
 
-import logging
+import subprocess
 import numpy as np
-import librosa
 
-log = logging.getLogger(__name__)
+SR = 22050  # target sample rate
 
 
-def extract_track_features(filepath):
-    """Extract all features from an audio file. Returns dict or None on failure."""
+def _load_audio(filepath, offset=0, duration=None):
+    """Load audio via ffmpeg -> float32 numpy array.
+
+    Replaces librosa.load — no audioread, no soundfile, no warnings.
+    ffmpeg handles m4a/AAC natively.
+    Returns (y, sr) or (None, SR) on error.
+    """
+    cmd = ['ffmpeg']
+    if offset > 0:
+        cmd += ['-ss', str(offset)]
+    if duration:
+        cmd += ['-t', str(duration)]
+    cmd += [
+        '-i', filepath,
+        '-f', 'f32le',
+        '-acodec', 'pcm_f32le',
+        '-ar', str(SR),
+        '-ac', '1',
+        '-v', 'quiet',
+        'pipe:1',
+    ]
     try:
-        duration = librosa.get_duration(path=filepath)
+        proc = subprocess.run(cmd, capture_output=True, timeout=60)
+        if proc.returncode != 0 or len(proc.stdout) < 4:
+            return None, SR
+        y = np.frombuffer(proc.stdout, dtype=np.float32)
+        return y, SR
     except Exception:
-        return None
+        return None, SR
 
+
+def _get_duration(filepath):
+    """Get audio duration via ffprobe."""
+    try:
+        proc = subprocess.run([
+            'ffprobe', '-v', 'quiet',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            filepath,
+        ], capture_output=True, timeout=10)
+        return float(proc.stdout.strip())
+    except Exception:
+        return 0
+
+
+def extract_track_features(filepath, max_duration=300):
+    """Extract librosa features from an audio file.
+
+    Audio loaded via ffmpeg (no audioread/soundfile dependency).
+    Librosa used for DSP only (STFT, HPSS, MFCC, chroma, etc).
+
+    Returns dict with scalars, vectors, and derived features.
+    Returns None on any error or if track is too short.
+    """
+    import librosa
+
+    duration = _get_duration(filepath)
     if duration < 3:
         return None
 
-    # Single load: up to 90s from 5% in, covers all 3 sample points + tempo/key
-    load_offset = max(0, duration * 0.05)
-    load_duration = min(90, duration - load_offset)
-    try:
-        y_full, sr = librosa.load(
-            filepath, sr=22050, offset=load_offset, duration=load_duration, mono=True
-        )
-    except Exception:
-        return None
+    # Load 60s centered on the track — avoids intros/outros,
+    # samples the heart of the music
+    load_duration = min(60, duration * 0.9)
+    load_offset = max(0, (duration - load_duration) / 2)
 
-    if len(y_full) < sr:
+    y_full, sr = _load_audio(filepath, offset=load_offset, duration=load_duration)
+    if y_full is None or len(y_full) < sr:
         return None
 
     actual_loaded = len(y_full) / sr
 
+    # --- HPSS on full loaded audio (needs context) ---
+    try:
+        y_harm, y_perc = librosa.effects.hpss(y_full)
+        rms_harm = float(np.mean(librosa.feature.rms(y=y_harm)[0]))
+        rms_perc = float(np.mean(librosa.feature.rms(y=y_perc)[0]))
+        harm_energy = rms_harm
+        perc_energy = rms_perc
+        harm_fraction = rms_harm / (rms_harm + rms_perc + 1e-8)
+    except Exception:
+        harm_energy = 0.0
+        perc_energy = 0.0
+        harm_fraction = 0.5
+
+    # --- Tempogram / PLP on full audio ---
+    try:
+        oenv_full = librosa.onset.onset_strength(y=y_full, sr=sr)
+
+        tempogram = librosa.feature.tempogram(onset_envelope=oenv_full, sr=sr)
+        tg_mean = tempogram.mean(axis=1)
+        beat_regularity = float(np.max(tg_mean) / (np.mean(tg_mean) + 1e-8))
+        tg_norm = tg_mean / (np.sum(tg_mean) + 1e-8)
+        tg_norm = tg_norm[tg_norm > 0]
+        rhythm_complexity = float(-np.sum(tg_norm * np.log2(tg_norm + 1e-12)))
+
+        pulse = librosa.beat.plp(onset_envelope=oenv_full, sr=sr)
+        plp_stability = float(np.mean(pulse) / (np.std(pulse) + 1e-8))
+
+        onset_frames = librosa.onset.onset_detect(onset_envelope=oenv_full, sr=sr)
+        onset_rate = float(len(onset_frames) / (actual_loaded + 1e-8))
+    except Exception:
+        beat_regularity = 1.0
+        rhythm_complexity = 0.0
+        plp_stability = 1.0
+        onset_rate = 0.0
+
+    # --- Segments ---
     segments = _slice_segments(y_full, sr, actual_loaded)
     if not segments:
         return None
@@ -58,44 +140,48 @@ def extract_track_features(filepath):
 
     result = {"duration": duration}
 
-    for key in ("centroid_mean", "flatness_mean", "spectral_flux",
-                "onset_strength", "beat_strength", "vocal_proxy", "zcr_mean"):
+    # Average scalar features across segments
+    for key in ("centroid_mean", "centroid_std",
+                "bandwidth_std", "flatness_mean",
+                "spectral_flux", "flux_std",
+                "onset_strength", "beat_strength",
+                "rms_linear"):
         result[key] = float(np.mean([f[key] for f in seg_feats]))
 
-    rms_linear_vals = [f["rms_linear"] for f in seg_feats]
-    avg_rms_linear = float(np.mean(rms_linear_vals))
-    result["rms_mean"] = float(20 * np.log10(avg_rms_linear + 1e-10))
+    # RMS: convert averaged linear to dB
+    result["rms_mean"] = float(20 * np.log10(result["rms_linear"] + 1e-10))
+    del result["rms_linear"]
 
-    rms_db_vals = [20 * np.log10(v + 1e-10) for v in rms_linear_vals]
+    # RMS variance across segments
+    rms_db_vals = [20 * np.log10(f["rms_linear"] + 1e-10) for f in seg_feats]
     result["rms_variance"] = float(np.var(rms_db_vals)) if len(rms_db_vals) > 1 else 0.0
 
-    all_rms_db = []
-    for f in seg_feats:
-        all_rms_db.extend(f["_rms_db_frames"])
-    if all_rms_db:
-        arr = np.array(all_rms_db)
-        p95 = float(np.percentile(arr, 95))
-        result["dynamic_range"] = p95 - float(np.percentile(arr, 5))
-        result["rms_max"] = p95
-    else:
-        result["dynamic_range"] = 0.0
-        result["rms_max"] = result["rms_mean"]
+    # Treble ratio (used by 5 classifiers)
+    result["treble_ratio"] = float(np.mean([f["treble_ratio"] for f in seg_feats]))
 
-    mfcc_vecs = [np.array(f["mfcc_mean"]) for f in seg_feats]
-    result["mfcc_mean"] = np.mean(mfcc_vecs, axis=0).tolist()
+    # Delta MFCC variance (used by 2 classifiers)
+    result["mfcc_delta_var"] = float(np.mean([f["mfcc_delta_var"] for f in seg_feats]))
 
-    mfcc_std_vecs = [np.array(f["mfcc_std"]) for f in seg_feats]
-    result["mfcc_std"] = np.mean(mfcc_std_vecs, axis=0).tolist()
+    # Modulation crest (used by instrumental)
+    result["mod_crest"] = float(np.mean([f["mod_crest"] for f in seg_feats]))
 
-    contrast_vecs = [np.array(f["contrast_mean"]) for f in seg_feats]
-    result["contrast_mean"] = np.mean(contrast_vecs, axis=0).tolist()
+    # HPSS scalars (from full audio)
+    result["harm_energy"] = harm_energy
+    result["perc_energy"] = perc_energy
+    result["harm_fraction"] = harm_fraction
 
-    chroma_vecs = [np.array(f["chroma_mean"]) for f in seg_feats]
-    result["chroma_mean"] = np.mean(chroma_vecs, axis=0).tolist()
+    # Tempogram / PLP / onset rate (from full audio)
+    result["beat_regularity"] = beat_regularity
+    result["rhythm_complexity"] = rhythm_complexity
+    result["plp_stability"] = plp_stability
+    result["onset_rate"] = onset_rate
 
-    tonnetz_vecs = [np.array(f["tonnetz_mean"]) for f in seg_feats]
-    result["tonnetz_mean"] = np.mean(tonnetz_vecs, axis=0).tolist()
+    # Vector features — average across segments
+    for key in ("mfcc_mean", "chroma_mean", "tonnetz_mean"):
+        vecs = [np.array(f[key]) for f in seg_feats]
+        result[key] = np.mean(vecs, axis=0).tolist()
 
+    # Tempo + key
     try:
         mid = len(y_full) // 2
         half_window = min(30 * sr, mid)
@@ -105,22 +191,30 @@ def extract_track_features(filepath):
         key, mode = _extract_key_mode(y_tempo, sr)
         result["key"] = key
         result["mode"] = mode
-    except Exception as e:
-        log.warning("tempo/key extraction failed for %s: %s", filepath, e)
+    except Exception:
         result["tempo"] = 0.0
         result["key"] = 0
         result["mode"] = 1
+
+    # Chroma major key correlation (Krumhansl-Schmuckler)
+    try:
+        chroma_avg = np.array(result.get("chroma_mean", [0] * 12))
+        major_profile = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09,
+                                  2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+        best_key = result.get("key", 0)
+        rotated = np.roll(chroma_avg, -best_key)
+        corr = float(np.corrcoef(rotated, major_profile)[0, 1])
+        result["chroma_major_corr"] = max(-1.0, min(1.0, corr))
+    except Exception:
+        result["chroma_major_corr"] = 0.0
 
     return result
 
 
 def _slice_segments(y, sr, loaded_dur, seg_dur=10.0):
-    """Slice 3 segments at 15%, 50%, 85% of the loaded audio buffer."""
     seg_samples = int(seg_dur * sr)
-
     if loaded_dur < 15:
         return [y]
-
     segments = []
     for pct in (0.15, 0.50, 0.85):
         center = int(loaded_dur * pct * sr)
@@ -132,112 +226,119 @@ def _slice_segments(y, sr, loaded_dur, seg_dur=10.0):
         seg = y[start:end]
         if len(seg) >= sr:
             segments.append(seg)
-
     return segments
 
 
 def _segment_features(y, sr):
-    """Extract features from a single audio segment.
+    """Extract features from a single segment. One STFT, all features."""
+    import librosa
 
-    Computes STFT once and reuses it for all spectral features.
-    """
     try:
         S = np.abs(librosa.stft(y, n_fft=2048, hop_length=512))
         S_power = S ** 2
+        freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
 
+        # RMS
         rms = np.sqrt(np.mean(S_power, axis=0))
         rms_linear = float(np.mean(rms))
-        rms_db_frames = (20 * np.log10(rms + 1e-10)).tolist()
 
-        centroid = librosa.feature.spectral_centroid(S=S, sr=sr)[0]
+        # Spectral features
+        centroid = librosa.feature.spectral_centroid(S=S, freq=freqs)[0]
         centroid_mean = float(np.mean(centroid))
+        centroid_std = float(np.std(centroid))
 
         flatness = librosa.feature.spectral_flatness(S=S)[0]
         flatness_mean = float(np.mean(flatness))
 
+        # Flux
         if S.shape[1] > 1:
             diff = np.diff(S, axis=1)
             flux_per_frame = np.sqrt(np.sum(diff ** 2, axis=0))
             spectral_flux = float(np.mean(flux_per_frame))
+            flux_std = float(np.std(flux_per_frame))
         else:
             spectral_flux = 0.0
+            flux_std = 0.0
 
+        # Onset/beat from spectrogram
         S_db = librosa.power_to_db(S_power)
         onset_env = librosa.onset.onset_strength(S=S_db, sr=sr)
         onset_strength = float(np.mean(onset_env))
-
         beat_strength = float(np.percentile(onset_env, 75))
 
-        H, _ = librosa.decompose.hpss(S)
-        h_energy = float(np.sum(H ** 2))
-        total_energy = float(np.sum(S_power))
-        harmonic_ratio = h_energy / total_energy if total_energy > 1e-10 else 0.0
-        h_flatness = float(np.mean(librosa.feature.spectral_flatness(S=H)[0]))
-        vocal_proxy = harmonic_ratio * (1.0 - h_flatness)
+        # Bandwidth (only std is used)
+        bandwidth = librosa.feature.spectral_bandwidth(S=S, freq=freqs)[0]
+        bandwidth_std = float(np.std(bandwidth))
 
+        # MFCCs
         mel_S = librosa.feature.melspectrogram(S=S_power, sr=sr)
         mfcc = librosa.feature.mfcc(S=librosa.power_to_db(mel_S), n_mfcc=13)
         mfcc_mean = np.mean(mfcc, axis=1).tolist()
-        mfcc_std = np.std(mfcc, axis=1).tolist()
 
-        contrast = librosa.feature.spectral_contrast(S=S, sr=sr)
-        contrast_mean = np.mean(contrast, axis=1).tolist()
+        # Delta MFCCs (only order 1 variance used)
+        mfcc_delta = librosa.feature.delta(mfcc)
+        mfcc_delta_var = float(np.mean(np.std(mfcc_delta, axis=1)))
 
+        # Chroma
         chroma = librosa.feature.chroma_stft(S=S_power, sr=sr)
         chroma_mean = np.mean(chroma, axis=1).tolist()
 
+        # Tonnetz
         tonnetz = librosa.feature.tonnetz(chroma=chroma)
         tonnetz_mean = np.mean(tonnetz, axis=1).tolist()
 
-        zcr_mean = float(np.mean(librosa.feature.zero_crossing_rate(y)[0]))
+        # Treble ratio
+        treble_mask = freqs >= 2000
+        treble = S_power[treble_mask].sum(axis=0)
+        total_band = S_power.sum(axis=0) + 1e-8
+        treble_ratio = float(np.mean(treble / total_band))
+
+        # Modulation spectrum — only mod_crest used
+        if len(centroid) > 4:
+            mod_spectrum = np.abs(np.fft.rfft(centroid))
+            if np.any(mod_spectrum > 0):
+                mod_cr = float(np.max(mod_spectrum) / (np.mean(mod_spectrum) + 1e-8))
+            else:
+                mod_cr = 1.0
+        else:
+            mod_cr = 1.0
 
         return {
             "rms_linear": rms_linear,
             "centroid_mean": centroid_mean,
+            "centroid_std": centroid_std,
+            "bandwidth_std": bandwidth_std,
             "flatness_mean": flatness_mean,
             "spectral_flux": spectral_flux,
+            "flux_std": flux_std,
             "onset_strength": onset_strength,
             "beat_strength": beat_strength,
-            "vocal_proxy": vocal_proxy,
             "mfcc_mean": mfcc_mean,
-            "mfcc_std": mfcc_std,
-            "contrast_mean": contrast_mean,
+            "mfcc_delta_var": mfcc_delta_var,
             "chroma_mean": chroma_mean,
             "tonnetz_mean": tonnetz_mean,
-            "zcr_mean": zcr_mean,
-            "_rms_db_frames": rms_db_frames,
+            "treble_ratio": treble_ratio,
+            "mod_crest": mod_cr,
         }
-    except Exception as e:
-        log.warning("segment feature extraction failed: %s", e)
+    except Exception:
         return None
 
 
 def _extract_key_mode(y, sr):
-    """Detect key (0-11, C=0) and mode (0=minor, 1=major) via Krumhansl-Schmuckler."""
+    import librosa
     chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
     chroma_mean = np.mean(chroma, axis=1)
-
     major = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09,
                       2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
     minor = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53,
                       2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
-
-    best_corr = -2.0
-    best_key = 0
-    best_mode = 1
-
+    best_corr, best_key, best_mode = -2.0, 0, 1
     for shift in range(12):
         rotated = np.roll(chroma_mean, -shift)
         maj_corr = float(np.corrcoef(rotated, major)[0, 1])
         min_corr = float(np.corrcoef(rotated, minor)[0, 1])
-
         if maj_corr > best_corr:
-            best_corr = maj_corr
-            best_key = shift
-            best_mode = 1
+            best_corr, best_key, best_mode = maj_corr, shift, 1
         if min_corr > best_corr:
-            best_corr = min_corr
-            best_key = shift
-            best_mode = 0
-
+            best_corr, best_key, best_mode = min_corr, shift, 0
     return best_key, best_mode

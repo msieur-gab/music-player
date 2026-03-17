@@ -4,11 +4,20 @@ Zone playlists are generated on the fly from scoring. Saved playlists
 are persisted in SQLite for user bookmarking.
 """
 
+import json
 import os
 
-from .db import _connect, FEATURE_COLS, PROFILE_FEATURES, get_norm_ranges
+from .db import _connect
 from .profiles import CONTEXT_PROFILES
-from .scoring import score_all_tracks, normalize_vec, cosine
+from .scoring import score_all_tracks, cosine
+
+
+# Classifier keys used for diversity vector in MMR
+_CLS_VEC_KEYS = [
+    "arousal", "valence", "happy", "sad", "relaxed", "aggressive",
+    "danceable", "energetic", "hypnotic", "instrumental",
+    "brilliant", "radiant", "contemplative",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +63,6 @@ def generate_playlist(zone_id, music_root, limit=25, artist=None, album=None):
 
     conn = _connect(music_root)
     scored = score_all_tracks(conn)
-    ranges = get_norm_ranges(conn)
     conn.close()
 
     raw_candidates = []
@@ -64,8 +72,8 @@ def generate_playlist(zone_id, music_root, limit=25, artist=None, album=None):
         if album and row["album"] != album:
             continue
         zone_score = scores.get(zone_id, 0)
-        feats = {f: row[f] for f in FEATURE_COLS}
-        raw_candidates.append((zone_score, row, feats))
+        cls = json.loads(row["cls_json"]) if row["cls_json"] else {}
+        raw_candidates.append((zone_score, row, cls))
 
     if not raw_candidates:
         return []
@@ -74,9 +82,11 @@ def generate_playlist(zone_id, music_root, limit=25, artist=None, album=None):
     threshold = best_score * 0.90
 
     candidates = []
-    for zone_score, row, feats in raw_candidates:
+    for zone_score, row, cls in raw_candidates:
         if zone_score < threshold:
             continue
+        # Build diversity vector from classifier outputs
+        vec = [cls.get(k, 0.5) for k in _CLS_VEC_KEYS]
         candidates.append({
             "score": zone_score,
             "key": row["track_id"],
@@ -84,7 +94,7 @@ def generate_playlist(zone_id, music_root, limit=25, artist=None, album=None):
             "album": row["album"],
             "title": row["title"],
             "file": row["file"],
-            "vec": normalize_vec(feats, ranges),
+            "vec": vec,
         })
 
     candidates.sort(key=lambda c: c["score"], reverse=True)
@@ -115,10 +125,7 @@ def generate_playlist(zone_id, music_root, limit=25, artist=None, album=None):
 
 
 def _mmr_order(candidates, target_vec, limit, diversity=0.3):
-    """Maximal Marginal Relevance: balance relevance with diversity.
-
-    Also penalizes consecutive same-artist/album runs.
-    """
+    """Maximal Marginal Relevance: balance relevance with diversity."""
     if not candidates:
         return []
 

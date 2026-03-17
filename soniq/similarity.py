@@ -1,24 +1,29 @@
 """Similarity search, harmony matching, mood clustering, and transitions.
 
-All queries are computed on the fly from stored features.
+v0.6: uses classifier outputs (cls_json) for mood clusters and as part of
+the similarity vector. Raw features still used for acoustic similarity
+and transitions.
 """
 
 import json
 
-from .db import _connect, FEATURE_COLS, PROFILE_FEATURES, get_norm_ranges
-from .scoring import cosine, compute_arousal, compute_valence, _MAJOR_TEMPLATE, _MT_NORM
+from .db import _connect, FEATURE_COLS, get_norm_ranges
+from .scoring import cosine
 
 
 # Circle of fifths: key 0=C, 1=C#, ... 11=B
 _KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
+# Classifier keys used for similarity (all 0-1, no normalization needed)
+_CLS_SIM_KEYS = [
+    "arousal", "valence", "happy", "sad", "relaxed", "aggressive",
+    "danceable", "energetic", "hypnotic", "instrumental",
+    "brilliant", "radiant", "contemplative", "party",
+]
+
 
 def _compatible_keys(key, mode):
-    """Return set of (key, mode) tuples that are harmonically compatible.
-
-    Includes: same key, relative major/minor, circle-of-fifths neighbors,
-    and parallel major/minor.
-    """
+    """Return set of (key, mode) tuples that are harmonically compatible."""
     compat = {(key, mode)}
 
     if mode == 1:
@@ -42,8 +47,8 @@ def _compatible_keys(key, mode):
 def find_similar(track_id, music_root, limit=10):
     """Find tracks most similar to the given one.
 
-    Builds a 61-dimension normalized vector from all feature groups.
-    Scored via inverse Euclidean distance.
+    Uses classifier outputs (14D, already 0-1) + vector features for
+    acoustic similarity. Scored via inverse Euclidean distance.
     """
     conn = _connect(music_root)
     target_row = conn.execute(
@@ -53,14 +58,12 @@ def find_similar(track_id, music_root, limit=10):
         conn.close()
         return []
 
-    ranges = get_norm_ranges(conn)
     all_rows = conn.execute("SELECT * FROM tracks").fetchall()
     conn.close()
 
+    # Compute z-score stats for vector features
     vec_collectors = {
         "mfcc_mean_json": ([], 13),
-        "mfcc_std_json": ([], 13),
-        "contrast_mean_json": ([], 7),
         "chroma_mean_json": ([], 12),
         "tonnetz_mean_json": ([], 6),
     }
@@ -84,12 +87,13 @@ def find_similar(track_id, music_root, limit=10):
 
     def _full_vec(row):
         vec = []
-        for f in PROFILE_FEATURES:
-            r = ranges.get(f, [0, 0])
-            lo, hi = r[0], r[1]
-            val = row[f] if row[f] is not None else 0
-            vec.append((val - lo) / (hi - lo) if hi > lo else 0.5)
 
+        # Classifier outputs (already 0-1, no normalization needed)
+        cls = json.loads(row["cls_json"]) if row["cls_json"] else {}
+        for k in _CLS_SIM_KEYS:
+            vec.append(cls.get(k, 0.5))
+
+        # Vector features (z-score normalized)
         for col, (_, dims) in vec_collectors.items():
             v = json.loads(row[col]) if isinstance(row[col], str) else row[col]
             v = v or [0] * dims
@@ -120,10 +124,7 @@ def find_similar(track_id, music_root, limit=10):
 
 
 def find_by_harmony(track_id, music_root, limit=20):
-    """Find tracks harmonically compatible with the given track.
-
-    Uses key/mode for filtering, then ranks by chroma vector similarity.
-    """
+    """Find tracks harmonically compatible with the given track."""
     conn = _connect(music_root)
     target = conn.execute(
         "SELECT * FROM tracks WHERE track_id = ?", (track_id,)
@@ -170,7 +171,7 @@ def find_by_harmony(track_id, music_root, limit=20):
 
 
 def get_mood_clusters(music_root):
-    """Cluster all tracks into mood quadrants using audio features.
+    """Cluster all tracks into mood quadrants using pre-computed arousal/valence.
 
     Returns 4 quadrants (Russell's Circumplex):
       - high_positive: excited, happy, euphoric
@@ -179,11 +180,8 @@ def get_mood_clusters(music_root):
       - low_negative: sad, melancholic, dark
     """
     conn = _connect(music_root)
-    ranges = get_norm_ranges(conn)
     rows = conn.execute(
-        "SELECT track_id, artist, album, title, file, "
-        + ", ".join(FEATURE_COLS)
-        + ", chroma_mean_json, tonnetz_mean_json FROM tracks"
+        "SELECT track_id, artist, album, title, file, cls_json FROM tracks"
     ).fetchall()
     conn.close()
 
@@ -191,46 +189,13 @@ def get_mood_clusters(music_root):
         return {"high_positive": [], "high_negative": [],
                 "low_positive": [], "low_negative": []}
 
-    def _norm(val, feat):
-        r = ranges.get(feat, [0, 0])
-        lo, hi = r[0], r[1]
-        return (val - lo) / (hi - lo) if hi > lo else 0.5
-
-    major_template = _MAJOR_TEMPLATE
-    mt_norm = _MT_NORM
-
     clusters = {"high_positive": [], "high_negative": [],
                 "low_positive": [], "low_negative": []}
 
     for row in rows:
-        arousal = (
-            _norm(row["tempo"], "tempo") * 0.3
-            + _norm(row["rms_mean"], "rms_mean") * 0.25
-            + _norm(row["onset_strength"], "onset_strength") * 0.25
-            + _norm(row["spectral_flux"], "spectral_flux") * 0.2
-        )
-
-        brightness = _norm(row["centroid_mean"], "centroid_mean")
-
-        chroma = json.loads(row["chroma_mean_json"]) if row["chroma_mean_json"] else []
-        if chroma and len(chroma) == 12:
-            key_idx = int(row["key"])
-            rotated = chroma[key_idx:] + chroma[:key_idx]
-            dot = sum(a * b for a, b in zip(rotated, major_template))
-            c_norm = sum(v**2 for v in rotated) ** 0.5
-            major_corr = dot / (c_norm * mt_norm) if c_norm > 0 else 0.5
-        else:
-            major_corr = 0.5
-
-        tonnetz = json.loads(row["tonnetz_mean_json"]) if row["tonnetz_mean_json"] else []
-        if tonnetz and len(tonnetz) == 6:
-            consonance = (abs(tonnetz[0]) + abs(tonnetz[1])
-                         + abs(tonnetz[4]) + abs(tonnetz[5])) / 4.0
-            consonance = min(1.0, consonance * 5)
-        else:
-            consonance = 0.5
-
-        valence = brightness * 0.3 + major_corr * 0.4 + consonance * 0.3
+        cls = json.loads(row["cls_json"]) if row["cls_json"] else {}
+        arousal = cls.get("arousal", 0.5)
+        valence = cls.get("valence", 0.5)
 
         if arousal >= 0.5:
             quadrant = "high_positive" if valence >= 0.5 else "high_negative"
@@ -259,11 +224,7 @@ def get_mood_clusters(music_root):
 
 
 def find_transitions(track_id, music_root, limit=10):
-    """Find tracks that would transition smoothly from the given track.
-
-    A good transition has similar tempo, compatible key, similar energy,
-    and close chroma profile.
-    """
+    """Find tracks that would transition smoothly from the given track."""
     conn = _connect(music_root)
     target = conn.execute(
         "SELECT * FROM tracks WHERE track_id = ?", (track_id,)
@@ -273,7 +234,6 @@ def find_transitions(track_id, music_root, limit=10):
         return []
 
     all_rows = conn.execute("SELECT * FROM tracks").fetchall()
-    ranges = get_norm_ranges(conn)
     conn.close()
 
     t_key, t_mode = int(target["key"]), int(target["mode"])

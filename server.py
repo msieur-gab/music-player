@@ -357,8 +357,8 @@ class Handler(SimpleHTTPRequestHandler):
             tracks_list = []
             for r in rows:
                 track = {k: r[k] for k in r.keys()}
-                for jcol in ('mfcc_mean_json', 'mfcc_std_json', 'contrast_mean_json',
-                             'chroma_mean_json', 'tonnetz_mean_json'):
+                for jcol in ('mfcc_mean_json', 'chroma_mean_json',
+                             'tonnetz_mean_json', 'cls_json'):
                     if jcol in track and isinstance(track[jcol], str):
                         track[jcol] = _json.loads(track[jcol])
                 tracks_list.append(track)

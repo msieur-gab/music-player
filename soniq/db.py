@@ -1,7 +1,7 @@
 """Database management — SQLite schema, connection, track storage.
 
-Tracks table stores objective audio features only. Classification scores
-are computed on demand by the scoring module -- never stored.
+Tracks table stores objective audio features + classifier outputs (cls_json).
+Schema v11: clean break from v10 — new feature set, full re-analysis required.
 """
 
 import sqlite3
@@ -9,26 +9,24 @@ import json
 import os
 
 DB_FILE = ".audio_features.db"
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
-# Numeric feature columns in tracks table
+# Numeric feature columns in tracks table (v0.6 — 25 scalars)
 FEATURE_COLS = [
     "duration", "tempo", "key", "mode",
-    "rms_mean", "rms_max", "rms_variance", "dynamic_range",
-    "centroid_mean", "flatness_mean", "spectral_flux",
-    "onset_strength", "beat_strength", "vocal_proxy", "zcr_mean",
-]
-
-# Subset used for context profile matching (normalized 0-1 via min-max)
-PROFILE_FEATURES = [
-    "tempo", "rms_mean", "dynamic_range", "centroid_mean",
-    "flatness_mean", "spectral_flux", "onset_strength",
-    "beat_strength", "rms_variance", "vocal_proxy",
+    "rms_mean", "rms_variance",
+    "centroid_mean", "centroid_std", "bandwidth_std", "flatness_mean",
+    "spectral_flux", "flux_std",
+    "onset_strength", "beat_strength",
+    "treble_ratio", "mfcc_delta_var", "mod_crest",
+    "harm_energy", "perc_energy", "harm_fraction",
+    "beat_regularity", "rhythm_complexity", "plp_stability", "onset_rate",
+    "chroma_major_corr",
 ]
 
 
 def _db_path(music_root):
-    """DB lives locally (not on 9p mount -- WAL locking fails there)."""
+    """DB lives locally (not on 9p mount — WAL locking fails there)."""
     local_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".data")
     os.makedirs(local_dir, exist_ok=True)
     return os.path.join(local_dir, DB_FILE)
@@ -47,15 +45,21 @@ def _connect(music_root):
 
 
 def _ensure_schema(conn):
-    """Create or migrate tables to current schema version."""
+    """Create or migrate tables to current schema version.
+
+    v11 is a clean break — DROP and recreate tracks table.
+    """
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     if version >= SCHEMA_VERSION:
         return
 
     feat_sql = ", ".join(f"{c} REAL DEFAULT 0" for c in FEATURE_COLS)
 
+    # Clean break: drop old tracks table if upgrading
     conn.executescript(f"""
-        CREATE TABLE IF NOT EXISTS tracks (
+        DROP TABLE IF EXISTS tracks;
+
+        CREATE TABLE tracks (
             track_id TEXT PRIMARY KEY,
             artist TEXT NOT NULL,
             album TEXT NOT NULL,
@@ -64,10 +68,9 @@ def _ensure_schema(conn):
             extracted_at TEXT NOT NULL DEFAULT (datetime('now')),
             {feat_sql},
             mfcc_mean_json TEXT DEFAULT '[]',
-            mfcc_std_json TEXT DEFAULT '[]',
-            contrast_mean_json TEXT DEFAULT '[]',
             chroma_mean_json TEXT DEFAULT '[]',
-            tonnetz_mean_json TEXT DEFAULT '[]'
+            tonnetz_mean_json TEXT DEFAULT '[]',
+            cls_json TEXT DEFAULT '{{}}'
         );
         CREATE TABLE IF NOT EXISTS meta (
             key TEXT PRIMARY KEY,
@@ -91,18 +94,12 @@ def _ensure_schema(conn):
         CREATE INDEX IF NOT EXISTS idx_album ON tracks(artist, album);
     """)
 
-    # Migrate: add columns that may be missing from older schemas
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(tracks)").fetchall()}
-    for col in ("chroma_mean_json", "tonnetz_mean_json"):
-        if col not in existing:
-            conn.execute(f"ALTER TABLE tracks ADD COLUMN {col} TEXT DEFAULT '[]'")
-
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
 
 
-def insert_track(conn, track_id, artist, album, title, file, features):
-    """Insert a track with extracted features."""
+def insert_track(conn, track_id, artist, album, title, file, features, classifications=None):
+    """Insert a track with extracted features and optional classifier outputs."""
     cols = ["track_id", "artist", "album", "title", "file"]
     vals = [track_id, artist, album, title, file]
 
@@ -112,14 +109,13 @@ def insert_track(conn, track_id, artist, album, title, file, features):
 
     cols.append("mfcc_mean_json")
     vals.append(json.dumps(features.get("mfcc_mean", [])))
-    cols.append("mfcc_std_json")
-    vals.append(json.dumps(features.get("mfcc_std", [])))
-    cols.append("contrast_mean_json")
-    vals.append(json.dumps(features.get("contrast_mean", [])))
     cols.append("chroma_mean_json")
     vals.append(json.dumps(features.get("chroma_mean", [])))
     cols.append("tonnetz_mean_json")
     vals.append(json.dumps(features.get("tonnetz_mean", [])))
+
+    cols.append("cls_json")
+    vals.append(json.dumps(classifications or {}))
 
     placeholders = ", ".join("?" * len(cols))
     col_names = ", ".join(cols)
@@ -129,13 +125,23 @@ def insert_track(conn, track_id, artist, album, title, file, features):
     conn.commit()
 
 
-def update_norm_ranges(conn):
-    """Cache min/max per profile feature for 0-1 normalization."""
+def get_norm_ranges(conn):
+    """Compute feature min/max ranges on demand from raw features.
+
+    Used by similarity/transitions for z-score normalization of vectors.
+    """
+    row = conn.execute(
+        "SELECT value FROM meta WHERE key = ?", ("norm_ranges",)
+    ).fetchone()
+    if row:
+        return json.loads(row[0])
+
+    # Compute and cache
     ranges = {}
-    for feat in PROFILE_FEATURES:
-        row = conn.execute(f"SELECT MIN({feat}), MAX({feat}) FROM tracks").fetchone()
-        if row and row[0] is not None:
-            ranges[feat] = [row[0], row[1]]
+    for feat in FEATURE_COLS:
+        r = conn.execute(f"SELECT MIN({feat}), MAX({feat}) FROM tracks").fetchone()
+        if r and r[0] is not None:
+            ranges[feat] = [r[0], r[1]]
         else:
             ranges[feat] = [0.0, 0.0]
     conn.execute(
@@ -143,17 +149,12 @@ def update_norm_ranges(conn):
         ("norm_ranges", json.dumps(ranges)),
     )
     conn.commit()
+    return ranges
 
 
-def get_norm_ranges(conn):
-    """Load cached normalization ranges."""
-    row = conn.execute(
-        "SELECT value FROM meta WHERE key = ?", ("norm_ranges",)
-    ).fetchone()
-    if row:
-        return json.loads(row[0])
-    update_norm_ranges(conn)
-    row = conn.execute(
-        "SELECT value FROM meta WHERE key = ?", ("norm_ranges",)
-    ).fetchone()
-    return json.loads(row[0]) if row else {}
+def update_norm_ranges(conn):
+    """Refresh cached min/max ranges after analysis."""
+    # Delete cached value so get_norm_ranges recomputes
+    conn.execute("DELETE FROM meta WHERE key = ?", ("norm_ranges",))
+    conn.commit()
+    return get_norm_ranges(conn)
