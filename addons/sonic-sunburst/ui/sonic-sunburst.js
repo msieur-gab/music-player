@@ -59,34 +59,8 @@ tpl.innerHTML = `
 .sr-meta { font-size: 11px; color: var(--text-muted, #5a5a5a); }
 .status { font-size: 12px; color: var(--text-muted, #6e6d6a); margin-left: auto; }
 
-.main { flex: 1; display: flex; overflow: hidden; position: relative; min-height: 0; }
-canvas { flex: 1; display: block; touch-action: none; }
-
-.playlist {
-  flex: 0 0 240px; border-left: 1px solid var(--border, #1a1a24);
-  display: flex; flex-direction: column;
-}
-.pl-header {
-  padding: 10px 12px; font-size: 12px; color: var(--text-muted, #4a4a5a);
-  border-bottom: 1px solid var(--border, #14141f); flex-shrink: 0;
-  font-weight: 600;
-}
-.pl-tracks { flex: 1; overflow-y: auto; scrollbar-width: thin; }
-.pl-row {
-  display: flex; align-items: center; gap: 8px;
-  padding: 7px 12px; cursor: pointer; font-size: 12px;
-  border-bottom: 1px solid var(--border, #0e0e16);
-  transition: background 0.15s;
-}
-.pl-row:hover { background: var(--bg-hover, #14141f); }
-.pl-row.active { background: var(--accent-light, rgba(196,112,75,0.1)); }
-.pl-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-.pl-info { flex: 1; min-width: 0; }
-.pl-title { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text, #bbb); }
-.pl-artist { font-size: 10px; color: var(--text-faint, #4a4a5a); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pl-sim { font-size: 9px; color: var(--accent, #c4704b); flex-shrink: 0; font-variant-numeric: tabular-nums; }
-
-@media (max-width: 700px) { .playlist { flex: 0 0 180px; } }
+.main { flex: 1; overflow: hidden; position: relative; min-height: 0; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; }
 </style>
 
 <div class="top-bar">
@@ -100,10 +74,6 @@ canvas { flex: 1; display: block; touch-action: none; }
 
 <div class="main">
   <canvas id="cv"></canvas>
-  <div class="playlist">
-    <div class="pl-header" id="pl-header">search a seed track</div>
-    <div class="pl-tracks" id="pl-tracks"></div>
-  </div>
 </div>
 `;
 
@@ -220,15 +190,13 @@ class SonicSunburst extends HTMLElement {
     // Canvas interaction
     this._setupInteraction();
 
-    // Playlist clicks
-    $('pl-tracks').addEventListener('click', e => {
-      const row = e.target.closest('.pl-row');
-      if (row) this._emitPlay(parseInt(row.dataset.idx));
-    });
-
     // Resize
     this._resizeObserver = new ResizeObserver(() => this._resize());
     this._resizeObserver.observe(this._canvas.parentElement);
+
+    // Redraw on theme change (canvas colors come from CSS vars at draw time)
+    new MutationObserver(() => requestAnimationFrame(() => this._draw()))
+      .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
     this._loadTracks();
   }
@@ -241,15 +209,21 @@ class SonicSunburst extends HTMLElement {
 
   async _loadTracks() {
     try {
-      const r = await fetch('/api/tracks?per_page=5000');
-      const data = await r.json();
-      const rows = data.tracks || data;
-
-      // Flatten cls_json into track object
-      this._tracks = rows.map(t => {
-        const cls = typeof t.cls_json === 'string' ? JSON.parse(t.cls_json) : (t.cls_json || {});
-        return { ...t, ...cls };
-      });
+      // Use TrackStore if available (loaded by main app), else fetch directly
+      const mod = await import('/js/services/track-store.js').catch(() => null);
+      if (mod?.trackStore) {
+        await mod.trackStore.load();
+        this._tracks = mod.trackStore.getAll();
+      } else {
+        // Fallback: direct fetch (standalone mode)
+        const r = await fetch('/api/tracks?per_page=5000');
+        const data = await r.json();
+        const rows = data.tracks || data;
+        this._tracks = rows.map(t => {
+          const cls = typeof t.cls_json === 'string' ? JSON.parse(t.cls_json) : (t.cls_json || {});
+          return { ...t, ...cls };
+        });
+      }
 
       this.shadowRoot.getElementById('status').textContent = this._tracks.length + ' tracks';
       this._resize();
@@ -298,7 +272,7 @@ class SonicSunburst extends HTMLElement {
     this._selectedWedge = -1;
     this._zoom = 1; this._panX = 0; this._panY = 0;
     this._computeBurst();
-    this._generatePlaylist();
+    this._buildPlaylist();
     this._draw();
   }
 
@@ -387,14 +361,11 @@ class SonicSunburst extends HTMLElement {
     }
   }
 
-  /* ─── playlist ── */
+  /* ─── playlist → emit to main app's detail panel ── */
 
-  _generatePlaylist() {
-    const $ = id => this.shadowRoot.getElementById(id);
+  _buildPlaylist() {
     if (!this._seed) {
       this._playlist = [];
-      $('pl-tracks').innerHTML = '';
-      $('pl-header').textContent = 'search a seed track';
       return;
     }
 
@@ -404,46 +375,38 @@ class SonicSunburst extends HTMLElement {
       : this._burst;
     for (const item of items) this._playlist.push(item.track);
 
-    let label = this._playlist.length + ' tracks';
+    let label = `Similar to ${this._seed.title || 'Untitled'}`;
+    let desc = this._seed.artist || '';
     if (this._selectedWedge >= 0 && this._activeWedges[this._selectedWedge]) {
-      label += ' \u00b7 ' + this._activeWedges[this._selectedWedge].label;
-    } else {
-      label += ' \u00b7 by similarity';
+      desc += ` \u00b7 ${this._activeWedges[this._selectedWedge].label}`;
     }
-    $('pl-header').textContent = label;
-    this._renderPlaylist();
-  }
 
-  _renderPlaylist() {
-    const el = this.shadowRoot.getElementById('pl-tracks');
-    el.innerHTML = this._playlist.map((t, i) => {
-      const sim = i > 0 && this._burst[i - 1] ? (this._burst[i - 1].sim * 100).toFixed(0) + '%' : '';
-      const wSlot = i > 0 && this._burst[i - 1] ? this._burst[i - 1].wedgeSlot : 0;
-      const c = i === 0 ? [196, 112, 75] : (this._activeWedges[wSlot]?.color || [100, 100, 100]);
-      const active = i === this._playIdx ? ' active' : '';
-      return `<div class="pl-row${active}" data-idx="${i}">
-        <div class="pl-dot" style="background:${rgb(c)}"></div>
-        <div class="pl-info">
-          <div class="pl-title">${esc(t.title || 'Untitled')}</div>
-          <div class="pl-artist">${esc(t.artist || '')}</div>
-        </div>
-        ${sim ? `<span class="pl-sim">${sim}</span>` : ''}
-      </div>`;
-    }).join('');
-  }
-
-  /* ─── emit play to main app ── */
-
-  _emitPlay(index) {
-    this._playIdx = index;
-    this._renderPlaylist();
-
+    // Tell the main app to show this playlist in album-detail
     const tracks = this._playlist.map(t => ({
       file: t.file,
       title: t.title || 'Untitled',
       artist: t.artist || '',
       album: t.album || '',
-      url: `/music/${(t.file || '').split('/').map(s => encodeURIComponent(s)).join('/')}`,
+      cover: t.cover || null,
+      url: t.url || `/music/${(t.file || '').split('/').map(s => encodeURIComponent(s)).join('/')}`,
+    }));
+
+    this.dispatchEvent(new CustomEvent('addon-playlist', {
+      bubbles: true, composed: true,
+      detail: { label, desc, tracks },
+    }));
+  }
+
+  /* ─── emit play to main app ── */
+
+  _emitPlay(index) {
+    const tracks = this._playlist.map(t => ({
+      file: t.file,
+      title: t.title || 'Untitled',
+      artist: t.artist || '',
+      album: t.album || '',
+      cover: t.cover || null,
+      url: t.url || `/music/${(t.file || '').split('/').map(s => encodeURIComponent(s)).join('/')}`,
     }));
 
     this.dispatchEvent(new CustomEvent('addon-play', {
@@ -522,13 +485,13 @@ class SonicSunburst extends HTMLElement {
     const wHit = this._hitWedge(mx, my);
     if (wHit >= 0) {
       this._selectedWedge = this._selectedWedge === wHit ? -1 : wHit;
-      this._generatePlaylist();
+      this._buildPlaylist();
       this._draw();
       return;
     }
     if (this._selectedWedge >= 0) {
       this._selectedWedge = -1;
-      this._generatePlaylist();
+      this._buildPlaylist();
       this._draw();
     }
   }
@@ -669,9 +632,7 @@ class SonicSunburst extends HTMLElement {
   _resize() {
     const parent = this._canvas.parentElement;
     const rect = parent.getBoundingClientRect();
-    let pw = rect.width - 240;
-    if (pw < 300) pw = rect.width;
-    this._canvas.style.width = pw + 'px';
+    const pw = rect.width;
     this._canvas.width = pw * devicePixelRatio;
     this._canvas.height = rect.height * devicePixelRatio;
     this._ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
@@ -696,8 +657,8 @@ class SonicSunburst extends HTMLElement {
 
     ctx.clearRect(0, 0, W, H);
 
-    // Read theme from CSS variables
-    const style = getComputedStyle(this);
+    // Read theme from document root (source of truth, not the bridged copy)
+    const style = getComputedStyle(document.documentElement);
     const bgColor = style.getPropertyValue('--bg').trim() || '#0a0a0f';
     const textColor = style.getPropertyValue('--text').trim() || '#e8e6e3';
     const mutedColor = style.getPropertyValue('--text-muted').trim() || '#6e6d6a';

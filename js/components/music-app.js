@@ -1,6 +1,8 @@
-import { fetchLibrary, fetchDevices, fetchStatus, castTrack, controlPlayback, fetchPlaylist, fetchZones, fetchSavedPlaylist, savePlaylistApi, deleteSavedPlaylist, fetchSimilar } from '../services/api.js';
-import { recordPlay } from '../services/stats.js';
+import { fetchLibrary, fetchPlaylist, fetchZones, fetchSavedPlaylist, savePlaylistApi, deleteSavedPlaylist, fetchSimilar } from '../services/api.js';
 import { loadAddons } from '../services/addons.js';
+import { playback } from '../services/playback.js';
+import { trackStore } from '../services/track-store.js';
+import { applyTheme, applyThemeAll, onThemeChange } from '../services/theme-bridge.js';
 import './nav-rail.js';
 import './home-view.js';
 import './album-grid.js';
@@ -121,28 +123,12 @@ class MusicApp extends HTMLElement {
     this.attachShadow({ mode: 'open' });
     this.shadowRoot.appendChild(tpl.content.cloneNode(true));
     this._albums = [];
-    this._selectedDevice = null;
     this._pollId = null;
     this._view = 'home';
-
-    // Local playback
-    this._audio = new Audio();
-    this._audio.preload = 'metadata';
-    this._queue = [];
-    this._queueIndex = -1;
-    this._mode = 'local'; // 'local' or 'cast'
   }
 
   connectedCallback() {
     const $ = id => this.shadowRoot.getElementById(id);
-
-    // ── Local audio: auto-advance ──
-    this._audio.addEventListener('ended', () => {
-      if (this._queueIndex < this._queue.length - 1) {
-        this._queueIndex++;
-        this._playLocal(); // also updates media session metadata
-      }
-    });
 
     // ── Rail navigation ──
     $('rail').addEventListener('rail-navigate', (e) => {
@@ -235,9 +221,18 @@ class MusicApp extends HTMLElement {
       this._openSimilar(e.detail.artist, e.detail.album, e.detail.title);
     });
 
-    // ── Now-playing controls ──
+    // ── Now-playing controls → PlaybackController ──
     $('player').addEventListener('control', (e) => {
-      this._handleControl(e.detail);
+      const a = e.detail;
+      switch (a.type) {
+        case 'play':   playback.resume(); break;
+        case 'pause':  playback.pause(); break;
+        case 'toggle': playback.toggle(); break;
+        case 'next':   playback.next(); break;
+        case 'prev':   playback.prev(); break;
+        case 'seek':   playback.seek(a.value); break;
+        case 'volume': playback.volume(a.value); break;
+      }
     });
 
     // ── Now-playing → navigate to album ──
@@ -253,12 +248,15 @@ class MusicApp extends HTMLElement {
       }
     });
 
-    // Listen for device-select from addon (bubbles through shadow DOM)
-    this.shadowRoot.addEventListener('device-select', (e) => this._onDeviceSelect(e));
+    // Listen for device-select from addon → PlaybackController
+    this.shadowRoot.addEventListener('device-select', (e) => {
+      playback.selectDevice(e.detail);
+    });
 
     // ── Download addon events (bubbles through shadow DOM) ──
     this.shadowRoot.addEventListener('download-complete', () => {
       this._loadLibrary();
+      trackStore.refresh();
     });
 
     this.shadowRoot.addEventListener('download-activity', (e) => {
@@ -270,9 +268,17 @@ class MusicApp extends HTMLElement {
       this._loadAddons();
     });
 
-    // ── View addon playback — universal contract ──
+    // ── View addon events — universal contract ──
     this.shadowRoot.addEventListener('addon-play', (e) => {
       this._playPlaylist(e.detail.tracks, e.detail.index);
+    });
+
+    this.shadowRoot.addEventListener('addon-playlist', (e) => {
+      const { label, desc, tracks } = e.detail;
+      const detail = this.shadowRoot.getElementById('detail');
+      detail.playlist = { label, desc, tracks, saved: false };
+      detail.backLabel = this._view;
+      this.setAttribute('detail-open', '');
     });
 
     // ── Settings events ──
@@ -285,7 +291,7 @@ class MusicApp extends HTMLElement {
     });
 
     $('settings').addEventListener('ip-change', () => {
-      this._castBaseUrl = null;
+      playback.resetCastUrl();
     });
 
     // Restore theme
@@ -296,12 +302,10 @@ class MusicApp extends HTMLElement {
     // Set greeting name
     $('home').userName = localStorage.getItem('musicast-username') || '';
 
-    // Media Session (lock screen / notification controls)
-    this._setupMediaSession();
-
-    // Load addons, library, and start UI update loop
+    // Load addons, library, track store, and start UI update loop
     this._loadAddons();
     this._loadLibrary();
+    trackStore.load(); // preload shared track data (non-blocking)
     this._startUpdateLoop();
   }
 
@@ -369,29 +373,6 @@ class MusicApp extends HTMLElement {
     }
   }
 
-  async _onDeviceSelect(e) {
-    if (e.detail.id === 'local') {
-      if (this._mode === 'cast') controlPlayback('stop');
-      this._selectedDevice = null;
-      this._mode = 'local';
-      if (this._queueIndex >= 0 && this._queue.length) this._playLocal();
-      return;
-    }
-
-    this._selectedDevice = e.detail;
-    this._mode = 'cast';
-    await this._fetchServerIp();
-    if (this._queueIndex >= 0 && this._queue.length) {
-      const ok = await this._castQueue(this._queue, this._queueIndex);
-      if (ok) {
-        this._audio.pause();
-      } else {
-        this._mode = 'local';
-        this._playLocal();
-      }
-    }
-  }
-
   async _loadAddons() {
     const addons = await loadAddons();
     const container = this.shadowRoot.getElementById('addon-container');
@@ -415,6 +396,8 @@ class MusicApp extends HTMLElement {
           this.shadowRoot.insertBefore(el, container);
           this._addonViews[addon.id] = el;
           rail.addAddonButton(addon.id, addon.trigger, 'tab');
+          // Inject theme tokens into shadow DOM
+          applyTheme(el);
         } else {
           // Backend addon: overlay (download panel, etc.)
           container.appendChild(el);
@@ -423,6 +406,11 @@ class MusicApp extends HTMLElement {
       } else {
         container.appendChild(el);
       }
+    }
+
+    // Re-apply theme to all view addons when theme toggles
+    if (Object.keys(this._addonViews).length > 0) {
+      onThemeChange(() => applyThemeAll(Object.values(this._addonViews)));
     }
   }
 
@@ -492,8 +480,7 @@ class MusicApp extends HTMLElement {
 
       // Add cover URLs for each track
       for (const t of tracks) {
-        const a = this._albums.find(al => al.artist === t.artist && al.album === t.album);
-        if (a) t.cover = a.cover;
+        if (!t.cover) t.cover = trackStore.getCover(t.artist, t.album);
       }
 
       const detail = this.shadowRoot.getElementById('detail');
@@ -510,158 +497,14 @@ class MusicApp extends HTMLElement {
     }
   }
 
-  // ── Playlist playback (zone playlists) ──
+  // ── Playback — delegate to PlaybackController ──
 
   _playPlaylist(tracks, index) {
-    this._queue = tracks.map(t => ({
-      url: `/music/${t.file.split('/').map(s => encodeURIComponent(s)).join('/')}`,
-      title: t.title,
-      artist: t.artist,
-      album: t.album,
-      cover: t.cover || null,
-    }));
-    this._queueIndex = index;
-
-    if (this._mode === 'cast' && this._selectedDevice) {
-      this._castQueue(this._queue, index).then(ok => {
-        if (!ok) {
-          this._mode = 'local';
-          this._playLocal();
-        }
-      });
-    } else {
-      this._mode = 'local';
-      this._playLocal();
-    }
+    playback.play(tracks, index);
   }
 
-  // ── Playback ──
-
-  _play({ artist, album, cover, tracks, index }) {
-    this._queue = tracks.map((t) => {
-      const file = typeof t === 'string' ? t : t.file;
-      const match = file.match(/^\d+\s*-\s*(.+)\.\w+$/i);
-      const title = match ? match[1] : file;
-      return {
-        url: `/music/${encodeURIComponent(artist)}/${encodeURIComponent(album)}/${encodeURIComponent(file)}`,
-        title, artist, album,
-        cover: cover || null,
-      };
-    });
-    this._queueIndex = index;
-
-    if (this._mode === 'cast' && this._selectedDevice) {
-      this._castQueue(this._queue, index).then(ok => {
-        if (!ok) {
-          this._mode = 'local';
-          this._playLocal();
-        }
-      });
-    } else {
-      this._mode = 'local';
-      this._playLocal();
-    }
-  }
-
-  _playLocal() {
-    const track = this._queue[this._queueIndex];
-    if (!track) return;
-    this._audio.pause();
-    this._audio.src = track.url;
-    this._audio.play().catch(() => {});
-    this._updateMediaSession(track);
-    recordPlay(track);
-  }
-
-  _getCastBaseUrl() {
-    if (this._castBaseUrl) return this._castBaseUrl;
-
-    const saved = localStorage.getItem('musicast-lan-ip');
-    if (saved) {
-      this._castBaseUrl = `http://${saved}:${location.port || 8000}`;
-      return this._castBaseUrl;
-    }
-
-    return location.origin;
-  }
-
-  async _fetchServerIp() {
-    try {
-      const r = await fetch('/api/config');
-      const cfg = await r.json();
-      const ip = cfg.lanIp;
-
-      if (ip && !ip.startsWith('100.115.') && ip !== '127.0.0.1') {
-        localStorage.setItem('musicast-lan-ip', ip);
-        this._castBaseUrl = `http://${ip}:${cfg.port || 8000}`;
-      } else if (!localStorage.getItem('musicast-lan-ip')) {
-        const manual = prompt(
-          'Chromecast needs your WiFi IP to stream audio.\n' +
-          'Find it in: ChromeOS Settings > Network > WiFi\n\n' +
-          'Enter WiFi IP (e.g. 192.168.86.32):'
-        );
-        if (manual && manual.trim()) {
-          localStorage.setItem('musicast-lan-ip', manual.trim());
-          this._castBaseUrl = `http://${manual.trim()}:${cfg.port || 8000}`;
-        }
-      }
-    } catch { /* silent */ }
-  }
-
-  async _castQueue(queue, index) {
-    if (!this._selectedDevice) return false;
-    try {
-      const baseUrl = this._getCastBaseUrl();
-      const result = await castTrack(
-        this._selectedDevice.id, queue[index], queue, index, baseUrl
-      );
-      if (result.error) {
-        console.error('Cast error:', result.error);
-        return false;
-      }
-      recordPlay(queue[index]);
-      return true;
-    } catch (e) {
-      console.error('Cast failed:', e);
-      return false;
-    }
-  }
-
-  _handleControl(action) {
-    if (this._mode === 'cast') {
-      if (action.type === 'seek') controlPlayback('seek', action.value);
-      else if (action.type === 'volume') controlPlayback('volume', action.value);
-      else controlPlayback(action.type);
-    } else {
-      switch (action.type) {
-        case 'play':
-          this._audio.play().catch(() => {}); break;
-        case 'pause':
-          this._audio.pause(); break;
-        case 'toggle':
-          this._audio.paused ? this._audio.play().catch(() => {}) : this._audio.pause(); break;
-        case 'next':
-          if (this._queueIndex < this._queue.length - 1) {
-            this._queueIndex++;
-            this._playLocal();
-          }
-          break;
-        case 'prev':
-          if (this._audio.currentTime > 3) {
-            this._audio.currentTime = 0;
-          } else if (this._queueIndex > 0) {
-            this._queueIndex--;
-            this._playLocal();
-          }
-          break;
-        case 'seek':
-          if (action.value != null) this._audio.currentTime = action.value;
-          break;
-        case 'volume':
-          if (action.value != null) this._audio.volume = action.value;
-          break;
-      }
-    }
+  _play(detail) {
+    playback.playAlbum(detail);
   }
 
   // ── UI Update Loop ──
@@ -671,99 +514,16 @@ class MusicApp extends HTMLElement {
       const player = this.shadowRoot.getElementById('player');
       const detail = this.shadowRoot.getElementById('detail');
 
-      if (this._mode === 'cast' && this._selectedDevice) {
-        try {
-          const status = await fetchStatus();
-          const track = this._queue[this._queueIndex];
-          if (status.state === 'idle' && track) {
-            player.update({
-              state: 'paused',
-              currentTime: 0,
-              duration: 0,
-              volume: status.volume != null ? status.volume : 1,
-              title: track.title,
-              artist: track.artist,
-              album: track.album,
-              cover: track.cover,
-              queueIndex: this._queueIndex,
-              queueLength: this._queue.length,
-              device: this._selectedDevice.name,
-            });
-          } else {
-            player.update(status);
-          }
-          if (status.state !== 'idle') {
-            const playing = this._queue[this._queueIndex];
-            detail.highlightByUrl(playing ? playing.url : null);
-          }
-        } catch { /* silent */ }
-      } else {
-        const track = this._queue[this._queueIndex];
-        if (track && this._audio.src) {
-          player.update({
-            state: this._audio.paused ? 'paused' : 'playing',
-            currentTime: this._audio.currentTime || 0,
-            duration: this._audio.duration || 0,
-            volume: this._audio.volume,
-            title: track.title,
-            artist: track.artist,
-            album: track.album,
-            cover: track.cover,
-            queueIndex: this._queueIndex,
-            queueLength: this._queue.length,
-            device: null,
-          });
-          detail.highlightByUrl(track.url);
-          this._syncMediaSessionPosition();
-        } else {
-          player.update({ state: 'idle' });
-        }
+      const status = await playback.getStatus();
+      player.update(status);
+
+      if (status.state !== 'idle') {
+        const track = playback.currentTrack;
+        detail.highlightByUrl(track ? track.url : null);
       }
     }, 500);
   }
 
-  // ── Media Session API ──
-
-  _setupMediaSession() {
-    if (!('mediaSession' in navigator)) return;
-    const ms = navigator.mediaSession;
-
-    ms.setActionHandler('play', () => this._handleControl({ type: 'play' }));
-    ms.setActionHandler('pause', () => this._handleControl({ type: 'pause' }));
-    ms.setActionHandler('previoustrack', () => this._handleControl({ type: 'prev' }));
-    ms.setActionHandler('nexttrack', () => this._handleControl({ type: 'next' }));
-    ms.setActionHandler('seekto', (e) => {
-      this._handleControl({ type: 'seek', value: e.seekTime });
-    });
-  }
-
-  _updateMediaSession(track) {
-    if (!('mediaSession' in navigator) || !track) return;
-
-    const artwork = [];
-    if (track.cover) {
-      const coverUrl = new URL(track.cover, location.origin).href;
-      artwork.push({ src: coverUrl, sizes: '512x512', type: 'image/jpeg' });
-    }
-
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: track.title,
-      artist: track.artist,
-      album: track.album,
-      artwork,
-    });
-  }
-
-  _syncMediaSessionPosition() {
-    if (!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return;
-    if (!this._audio.duration || !isFinite(this._audio.duration)) return;
-
-    navigator.mediaSession.setPositionState({
-      duration: this._audio.duration,
-      playbackRate: this._audio.playbackRate,
-      position: Math.min(this._audio.currentTime, this._audio.duration),
-    });
-  }
 }
 
 customElements.define('music-app', MusicApp);
