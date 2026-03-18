@@ -393,6 +393,7 @@ class SonicSunburst extends HTMLElement {
 
     // Tell the main app to show this playlist in album-detail
     const tracks = this._playlist.map(t => ({
+      key: t.track_id || `${t.artist || ''}::${t.album || ''}::${t.title || ''}`,
       file: t.file,
       title: t.title || 'Untitled',
       artist: t.artist || '',

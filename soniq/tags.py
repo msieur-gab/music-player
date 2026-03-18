@@ -4,7 +4,7 @@ Stores extracted audio features + classifier outputs directly in the file's
 metadata as JSON, making the library fully portable. On startup, features can
 be loaded from tags in seconds instead of re-running librosa (hours).
 
-Schema v0.6:
+Schema v0.7:
   {
     "src": "soniq",
     "v": "0.6",

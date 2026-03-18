@@ -515,6 +515,7 @@ class SettingsPanel extends HTMLElement {
             progress.innerHTML = `<span class="done">${data.message}</span>`;
             btn.disabled = false;
             btn.textContent = 'Analyze library';
+            this.dispatchEvent(new CustomEvent('analysis-complete', { bubbles: true, composed: true }));
           } else if (data.status === 'error') {
             source.close();
             this._analysisSource = null;

@@ -38,7 +38,7 @@ def analyze_library(music_root, on_progress=None, workers=4):
 
         feats, cls, version = read_tag(path)
         if feats and version == CURRENT_VERSION and cls:
-            # Fast path: v0.6 tag with classifier outputs
+            # Fast path: v0.7 tag with classifier outputs
             insert_track(
                 conn, track_id, artist, album, title,
                 os.path.relpath(path, music_root), feats, cls,

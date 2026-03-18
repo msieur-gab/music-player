@@ -259,6 +259,12 @@ class MusicApp extends HTMLElement {
       trackStore.refresh();
     });
 
+    // ── Analysis complete — refresh library + track store ──
+    this.shadowRoot.addEventListener('analysis-complete', () => {
+      this._loadLibrary();
+      trackStore.refresh();
+    });
+
     this.shadowRoot.addEventListener('download-activity', (e) => {
       $('rail').setAddonBadge('downloader', e.detail.active);
     });
