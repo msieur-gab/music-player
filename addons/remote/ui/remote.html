@@ -209,6 +209,107 @@ body {
   text-overflow: ellipsis;
 }
 
+/* ── Device picker sheet ── */
+.device-sheet {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+}
+.device-sheet.open { display: block; }
+
+.device-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  animation: fadeIn 150ms ease;
+}
+@keyframes fadeIn { from { opacity: 0; } }
+
+.device-panel {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  border-radius: 16px 16px 0 0;
+  padding: 20px 20px calc(env(safe-area-inset-bottom) + 16px);
+  max-height: 60vh;
+  overflow-y: auto;
+  animation: sheetUp 200ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+@keyframes sheetUp {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+.device-panel-title {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+}
+
+.device-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.device-item:last-child { border-bottom: none; }
+.device-item:active { opacity: 0.6; }
+
+.device-item-icon {
+  width: 32px; height: 32px;
+  border-radius: 8px;
+  background: var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.device-item-icon svg {
+  width: 16px; height: 16px;
+  stroke: var(--text-mid);
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.device-item-icon.active { background: var(--accent); }
+.device-item-icon.active svg { stroke: #0a0a0f; }
+
+.device-item-name {
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text);
+}
+.device-item-name.active { color: var(--accent); }
+
+.device-loading {
+  text-align: center;
+  padding: 20px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+/* ── Header — make device name tappable ── */
+.device-name {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.device-name.has-cast::after {
+  content: ' ▾';
+  font-size: 8px;
+  opacity: 0.5;
+}
+
 /* ── Header ── */
 .header {
   display: flex;
@@ -570,6 +671,15 @@ input[type="range"]::-moz-range-thumb {
 
 </div><!-- /snap-container -->
 
+<!-- ── Device picker (only visible if cast addon is available) ── -->
+<div class="device-sheet" id="device-sheet">
+  <div class="device-scrim" id="device-scrim"></div>
+  <div class="device-panel">
+    <div class="device-panel-title">Output device</div>
+    <div id="device-list"><div class="device-loading">Scanning...</div></div>
+  </div>
+</div>
+
 <script>
 const $ = id => document.getElementById(id);
 
@@ -869,6 +979,86 @@ $('snap').addEventListener('scroll', () => {
   if (hint) hint.style.opacity = '0';
 }, { once: true });
 
+// ── Device picker (graceful — only works if cast addon is loaded) ──
+let hasCastAddon = false;
+
+async function checkCastAddon() {
+  try {
+    const r = await fetch('/api/devices');
+    if (r.ok) {
+      hasCastAddon = true;
+      $('device').classList.add('has-cast');
+    }
+  } catch {}
+}
+
+$('device').addEventListener('click', () => {
+  if (!hasCastAddon) return;
+  openDeviceSheet();
+});
+
+$('device-scrim').addEventListener('click', () => {
+  $('device-sheet').classList.remove('open');
+});
+
+async function openDeviceSheet() {
+  const sheet = $('device-sheet');
+  const list = $('device-list');
+  list.innerHTML = '<div class="device-loading">Scanning...</div>';
+  sheet.classList.add('open');
+
+  try {
+    const r = await fetch('/api/devices');
+    const devices = await r.json();
+
+    list.innerHTML = '';
+
+    // Local option always first
+    const localItem = createDeviceItem({ id: 'local', name: 'This device' }, !isCasting);
+    list.appendChild(localItem);
+
+    for (const dev of devices) {
+      const isActive = isCasting && $('device').textContent === dev.name;
+      list.appendChild(createDeviceItem(dev, isActive));
+    }
+
+    if (!devices.length) {
+      const hint = document.createElement('div');
+      hint.className = 'device-loading';
+      hint.textContent = 'No cast devices found';
+      list.appendChild(hint);
+    }
+  } catch {
+    list.innerHTML = '<div class="device-loading">Could not load devices</div>';
+  }
+}
+
+function createDeviceItem(dev, isActive) {
+  const item = document.createElement('div');
+  item.className = 'device-item';
+
+  const isLocal = dev.id === 'local';
+  const iconSvg = isLocal
+    ? '<svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>'
+    : '<svg viewBox="0 0 24 24"><path d="M2 16.1A5 5 0 0 1 5.9 20M2 12.05A9 9 0 0 1 9.95 20M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><line x1="2" y1="20" x2="2.01" y2="20"/></svg>';
+
+  item.innerHTML = `
+    <div class="device-item-icon${isActive ? ' active' : ''}">${iconSvg}</div>
+    <span class="device-item-name${isActive ? ' active' : ''}">${dev.name}</span>
+  `;
+
+  item.addEventListener('click', () => {
+    fetch('/api/remote/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'select-device', value: dev }),
+    }).catch(() => {});
+    $('device-sheet').classList.remove('open');
+  });
+
+  return item;
+}
+
 // ── Wake recovery — force reconnect SSE on phone wake ──
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
@@ -882,6 +1072,7 @@ setupMediaSession();
 connectStateStream();
 requestAnimationFrame(interpolate);
 loadPlaylists();
+checkCastAddon();
 </script>
 </body>
 </html>

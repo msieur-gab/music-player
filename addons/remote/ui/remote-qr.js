@@ -134,6 +134,9 @@ class RemoteQR extends HTMLElement {
               if (data && data.tracks && data.tracks.length) pb.play(data.tracks);
             }).catch(() => {});
             return; // async — pushStateNow will fire from play()
+          case 'select-device':
+            pb.selectDevice(cmd.value && cmd.value.id === 'local' ? null : cmd.value);
+            return; // async — state will update via poll
         }
         // Push state immediately so phone sees the effect without waiting for poll
         pb.pushStateNow();
