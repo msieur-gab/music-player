@@ -258,8 +258,11 @@ class PlaybackController {
   _playLocal() {
     const track = this._queue[this._queueIndex];
     if (!track) return;
+    const vol = this._audio.volume;
+    this._audio.volume = 0;
     this._audio.pause();
     this._audio.src = track.url;
+    this._audio.volume = vol;
     this._audio.play().catch(() => {});
     this._updateMediaSession(track);
     recordPlay(track);

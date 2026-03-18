@@ -37,9 +37,176 @@ html, body {
 }
 
 body {
+  display: block;
+  padding: 0;
+}
+
+/* ── Scroll-snap container — two full pages ── */
+.snap-container {
+  height: 100%;
+  overflow-y: auto;
+  scroll-snap-type: y mandatory;
+  -webkit-overflow-scrolling: touch;
+}
+
+.snap-page {
+  height: 100%;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+}
+
+.snap-page--player {
   display: flex;
   flex-direction: column;
   padding: env(safe-area-inset-top) 20px env(safe-area-inset-bottom);
+  position: relative;
+}
+
+/* ── Swipe hint pill ── */
+.swipe-hint {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  opacity: 0.35;
+  transition: opacity 0.3s;
+  pointer-events: none;
+}
+.swipe-hint svg {
+  width: 16px; height: 16px;
+  stroke: var(--text-mid);
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  animation: hintBounce 2s ease-in-out infinite;
+}
+.swipe-hint span {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+@keyframes hintBounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+
+/* ── Playlist section ── */
+.snap-page--playlists {
+  display: flex;
+  flex-direction: column;
+  padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+}
+
+.pl-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px 20px 12px;
+  flex-shrink: 0;
+}
+.pl-header svg {
+  width: 14px; height: 14px;
+  stroke: var(--text-dim);
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  animation: hintBounce 2s ease-in-out infinite reverse;
+}
+.pl-title {
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--text);
+}
+
+.pl-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 300;
+}
+
+/* ── Carousel ── */
+.pl-carousel {
+  flex: 1;
+  display: flex;
+  gap: 16px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  padding: 16px 20px 32px;
+  align-items: center;
+}
+.pl-carousel::-webkit-scrollbar { display: none; }
+
+.pl-card {
+  flex-shrink: 0;
+  width: 200px;
+  scroll-snap-align: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.pl-card:active {
+  transform: scale(0.96);
+}
+
+.pl-card-art {
+  width: 100%;
+  aspect-ratio: 1;
+  background: var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.pl-card-art img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.pl-card-art svg {
+  width: 40px; height: 40px;
+  stroke: var(--text-dim);
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.5;
+}
+
+.pl-card-info {
+  padding: 12px 14px;
+}
+.pl-card-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pl-card-meta {
+  font-size: 11px;
+  font-weight: 300;
+  color: var(--text-mid);
+  margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ── Header ── */
@@ -322,60 +489,86 @@ input[type="range"]::-moz-range-thumb {
 </style>
 </head>
 <body>
+<div class="snap-container" id="snap">
 
-<div class="header">
-  <div class="device-dot idle" id="dot"></div>
-  <span class="device-name" id="device">Connecting...</span>
-  <span class="queue-pos" id="queue-pos"></span>
-</div>
+<!-- ── Page 1: Player ── -->
+<div class="snap-page snap-page--player">
 
-<div class="idle-state active" id="idle">
-  <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-  <p>Waiting for playback</p>
-  <span class="sub">Play something from MusiCast to control it here</span>
-</div>
+  <div class="header">
+    <div class="device-dot idle" id="dot"></div>
+    <span class="device-name" id="device">Connecting...</span>
+    <span class="queue-pos" id="queue-pos"></span>
+  </div>
 
-<div class="player hidden" id="player">
-  <div class="art-container">
-    <div class="art" id="art">
-      <div class="art-placeholder" id="art-placeholder">
-        <svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+  <div class="idle-state active" id="idle">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    <p>Waiting for playback</p>
+    <span class="sub">Play something from MusiCast to control it here</span>
+  </div>
+
+  <div class="player hidden" id="player">
+    <div class="art-container">
+      <div class="art" id="art">
+        <div class="art-placeholder" id="art-placeholder">
+          <svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+        </div>
       </div>
     </div>
-  </div>
 
-  <div class="track-info">
-    <div class="track-title" id="title">--</div>
-    <div class="track-artist" id="artist">--</div>
-  </div>
+    <div class="track-info">
+      <div class="track-title" id="title">--</div>
+      <div class="track-artist" id="artist">--</div>
+    </div>
 
-  <div class="seek-section">
-    <input type="range" id="seek" min="0" max="100" value="0" step="0.1">
-    <div class="time-row">
-      <span id="time-cur">0:00</span>
-      <span id="time-dur">0:00</span>
+    <div class="seek-section">
+      <input type="range" id="seek" min="0" max="100" value="0" step="0.1">
+      <div class="time-row">
+        <span id="time-cur">0:00</span>
+        <span id="time-dur">0:00</span>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button class="ctrl-btn ctrl-prev" id="prev" aria-label="Previous">
+        <svg viewBox="0 0 24 24"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>
+      </button>
+      <button class="ctrl-btn ctrl-play" id="play" aria-label="Play/Pause">
+        <svg viewBox="0 0 24 24" id="play-icon"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+      </button>
+      <button class="ctrl-btn ctrl-next" id="next" aria-label="Next">
+        <svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+      </button>
+    </div>
+
+    <div class="volume-section">
+      <span class="vol-icon">
+        <svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+      </span>
+      <input type="range" id="volume" min="0" max="1" value="1" step="0.01">
     </div>
   </div>
 
-  <div class="controls">
-    <button class="ctrl-btn ctrl-prev" id="prev" aria-label="Previous">
-      <svg viewBox="0 0 24 24"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>
-    </button>
-    <button class="ctrl-btn ctrl-play" id="play" aria-label="Play/Pause">
-      <svg viewBox="0 0 24 24" id="play-icon"><polygon points="6 3 20 12 6 21 6 3"/></svg>
-    </button>
-    <button class="ctrl-btn ctrl-next" id="next" aria-label="Next">
-      <svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
-    </button>
+  <div class="swipe-hint" id="swipe-hint">
+    <svg viewBox="0 0 24 24"><polyline points="18 15 12 9 6 15"/></svg>
+    <span>Playlists</span>
   </div>
 
-  <div class="volume-section">
-    <span class="vol-icon">
-      <svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
-    </span>
-    <input type="range" id="volume" min="0" max="1" value="1" step="0.01">
-  </div>
 </div>
+
+<!-- ── Page 2: Playlists ── -->
+<div class="snap-page snap-page--playlists">
+
+  <div class="pl-header">
+    <svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+    <span class="pl-title">Playlists</span>
+  </div>
+
+  <div class="pl-empty" id="pl-empty">No saved playlists</div>
+  <div class="pl-carousel" id="pl-carousel"></div>
+
+</div>
+
+</div><!-- /snap-container -->
 
 <script>
 const $ = id => document.getElementById(id);
@@ -608,10 +801,87 @@ function interpolate() {
   requestAnimationFrame(interpolate);
 }
 
+// ── Playlists ──
+const placeholderSvg = '<svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>';
+
+async function loadPlaylists() {
+  try {
+    const r = await fetch('/api/playlists');
+    const playlists = await r.json();
+    const carousel = $('pl-carousel');
+    const empty = $('pl-empty');
+
+    if (!playlists.length) {
+      empty.style.display = '';
+      carousel.style.display = 'none';
+      return;
+    }
+
+    empty.style.display = 'none';
+    carousel.style.display = '';
+    carousel.innerHTML = '';
+
+    for (const pl of playlists) {
+      const card = document.createElement('div');
+      card.className = 'pl-card';
+      card.innerHTML = `
+        <div class="pl-card-art">${placeholderSvg}</div>
+        <div class="pl-card-info">
+          <div class="pl-card-name">${pl.name}</div>
+          <div class="pl-card-meta">${pl.zoneLabel || ''} · ${pl.trackCount} tracks</div>
+        </div>
+      `;
+
+      // Load first track's cover
+      fetch(`/api/playlists/${pl.id}`).then(r => r.json()).then(data => {
+        if (data?.tracks?.length) {
+          const cover = data.tracks[0].cover;
+          if (cover) {
+            const art = card.querySelector('.pl-card-art');
+            const img = document.createElement('img');
+            img.src = cover;
+            img.alt = '';
+            img.onload = () => { art.innerHTML = ''; art.appendChild(img); };
+          }
+        }
+      }).catch(() => {});
+
+      // Tap to play — always route through remote command (not cast)
+      card.addEventListener('click', () => {
+        fetch('/api/remote/command', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'play-playlist', value: pl.id }),
+        }).catch(() => {});
+        $('snap').scrollTo({ top: 0, behavior: 'smooth' });
+      });
+
+      carousel.appendChild(card);
+    }
+  } catch {
+    $('pl-empty').textContent = 'Could not load playlists';
+  }
+}
+
+// Hide swipe hint after first scroll
+$('snap').addEventListener('scroll', () => {
+  const hint = $('swipe-hint');
+  if (hint) hint.style.opacity = '0';
+}, { once: true });
+
+// ── Wake recovery — force reconnect SSE on phone wake ──
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    if (stateSource) { stateSource.close(); stateSource = null; }
+    connectStateStream();
+  }
+});
+
 // ── Init ──
 setupMediaSession();
 connectStateStream();
 requestAnimationFrame(interpolate);
+loadPlaylists();
 </script>
 </body>
 </html>

@@ -128,6 +128,11 @@ class RemoteQR extends HTMLElement {
           case 'prev':   pb.prev(); break;
           case 'seek':   pb.seek(cmd.value); break;
           case 'volume': pb.volume(cmd.value); break;
+          case 'play-playlist':
+            fetch(`/api/playlists/${cmd.value}`).then(r => r.json()).then(data => {
+              if (data && data.tracks && data.tracks.length) pb.play(data.tracks);
+            }).catch(() => {});
+            return; // async — pushStateNow will fire from play()
         }
         // Push state immediately so phone sees the effect without waiting for poll
         pb.pushStateNow();
