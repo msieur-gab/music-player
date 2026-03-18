@@ -102,6 +102,7 @@ class RemoteQR extends HTMLElement {
   }
 
   disconnectedCallback() {
+    this._disposed = true;
     if (this._cmdSse) {
       this._cmdSse.close();
       this._cmdSse = null;
@@ -110,7 +111,7 @@ class RemoteQR extends HTMLElement {
 
   /** Listen for remote commands via SSE and dispatch to playback service. */
   async _connectCommandStream() {
-    if (this._cmdSse) return;
+    if (this._cmdSse || this._disposed) return;
     // Cache module reference — no async import per command
     const { playback } = await import('/js/services/playback.js');
     this._playback = playback;
