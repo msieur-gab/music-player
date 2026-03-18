@@ -410,10 +410,10 @@ async function control(action, value) {
         body: JSON.stringify({ action, value }),
       });
     } else {
-      await fetch('/api/playback', {
+      await fetch('/api/remote/command', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: { action, value } }),
+        body: JSON.stringify({ action, value }),
       });
     }
   } catch {}
@@ -503,93 +503,98 @@ function ensureSilentAudio() {
   silentAudio = { ctx, osc, gain };
 }
 
-// ── Poll ──
-async function poll() {
-  try {
-    // Try local playback state first, fall back to cast status
-    let s;
-    try {
-      const r = await fetch('/api/playback');
-      s = await r.json();
-    } catch { s = { state: 'idle' }; }
-    // If local is idle, check cast status
-    if (s.state === 'idle') {
-      try {
-        const r2 = await fetch('/api/status');
-        const cs = await r2.json();
-        if (cs.state && cs.state !== 'idle') s = cs;
-      } catch {}
-    }
+// ── Update UI from state snapshot ──
+function updateUI(s) {
+  // Track whether we're controlling cast or local
+  isCasting = !!(s.device);
 
-    // Track whether we're controlling cast or local
-    isCasting = !!(s.device);
-
-    if (s.state === 'idle' || !s.title) {
-      $('idle').classList.add('active');
-      $('player').classList.add('hidden');
-      $('dot').classList.add('idle');
-      state = 'idle';
-      return;
-    }
-
-    $('idle').classList.remove('active');
-    $('player').classList.remove('hidden');
-    $('dot').classList.remove('idle');
-
-    state = s.state;
-    $('device').textContent = s.device || 'Local';
-    $('title').textContent = s.title || '--';
-    $('artist').textContent = s.artist || '--';
-    $('play-icon').innerHTML = s.state === 'playing' ? iconPause : iconPlay;
-    $('art').classList.toggle('playing', s.state === 'playing');
-
-    if (s.queueLength > 1) {
-      $('queue-pos').textContent = `${(s.queueIndex || 0) + 1} of ${s.queueLength}`;
-    } else {
-      $('queue-pos').textContent = '';
-    }
-
-    // Cover art
-    const coverUrl = s.cover || null;
-    if (coverUrl !== lastCover) {
-      lastCover = coverUrl;
-      if (coverUrl) {
-        const img = document.createElement('img');
-        img.src = coverUrl;
-        img.alt = '';
-        img.onload = () => {
-          $('art').innerHTML = '';
-          $('art').appendChild(img);
-        };
-      } else {
-        $('art').innerHTML = $('art-placeholder')?.outerHTML || '';
-      }
-    }
-
-    // Seek
-    duration = s.duration || 0;
-    if (!seeking) {
-      currentTime = s.currentTime || 0;
-      lastPollTs = performance.now();
-      $('seek').max = duration;
-      $('seek').value = currentTime;
-      $('time-cur').textContent = fmt(currentTime);
-    }
-    $('time-dur').textContent = fmt(duration);
-
-    // Volume
-    if (!volumeChanging && s.volume != null) {
-      $('volume').value = s.volume;
-    }
-
-    // Media session
-    ensureSilentAudio();
-    updateMediaSession(s);
-
-  } catch {
-    $('device').textContent = 'Connection lost';
+  if (s.state === 'idle' || !s.title) {
+    $('idle').classList.add('active');
+    $('player').classList.add('hidden');
     $('dot').classList.add('idle');
+    state = 'idle';
+    return;
   }
+
+  $('idle').classList.remove('active');
+  $('player').classList.remove('hidden');
+  $('dot').classList.remove('idle');
+
+  state = s.state;
+  $('device').textContent = s.device || 'Local';
+  $('title').textContent = s.title || '--';
+  $('artist').textContent = s.artist || '--';
+  $('play-icon').innerHTML = s.state === 'playing' ? iconPause : iconPlay;
+  $('art').classList.toggle('playing', s.state === 'playing');
+
+  if (s.queueLength > 1) {
+    $('queue-pos').textContent = `${(s.queueIndex || 0) + 1} of ${s.queueLength}`;
+  } else {
+    $('queue-pos').textContent = '';
+  }
+
+  // Cover art
+  const coverUrl = s.cover || null;
+  if (coverUrl !== lastCover) {
+    lastCover = coverUrl;
+    if (coverUrl) {
+      const img = document.createElement('img');
+      img.src = coverUrl;
+      img.alt = '';
+      img.onload = () => {
+        $('art').innerHTML = '';
+        $('art').appendChild(img);
+      };
+    } else {
+      $('art').innerHTML = $('art-placeholder')?.outerHTML || '';
+    }
+  }
+
+  // Seek
+  duration = s.duration || 0;
+  if (!seeking) {
+    currentTime = s.currentTime || 0;
+    lastPollTs = performance.now();
+    $('seek').max = duration;
+    $('seek').value = currentTime;
+    $('time-cur').textContent = fmt(currentTime);
+  }
+  $('time-dur').textContent = fmt(duration);
+
+  // Volume
+  if (!volumeChanging && s.volume != null) {
+    $('volume').value = s.volume;
+  }
+
+  // Media session
+  ensureSilentAudio();
+  updateMediaSession(s);
+}
+
+// ── SSE state stream (replaces polling) ──
+let stateSource = null;
+
+function connectStateStream() {
+  stateSource = new EventSource('/api/playback/stream');
+  stateSource.addEventListener('message', (e) => {
+    try {
+      const s = JSON.parse(e.data);
+      updateUI(s);
+      // If local is idle, check cast status as fallback
+      if (s.state === 'idle') {
+        fetch('/api/status').then(r => r.json()).then(cs => {
+          if (cs.state && cs.state !== 'idle') updateUI(cs);
+        }).catch(() => {});
+      }
+    } catch {}
+  });
+  stateSource.addEventListener('error', () => {
+    stateSource.close();
+    stateSource = null;
+    $('device').textContent = 'Reconnecting...';
+    $('dot').classList.add('idle');
+    setTimeout(connectStateStream, 2000);
+  });
 }
 
 // ── Smooth seek interpolation ──
@@ -605,8 +610,7 @@ function interpolate() {
 
 // ── Init ──
 setupMediaSession();
-setInterval(poll, 500);
-poll();
+connectStateStream();
 requestAnimationFrame(interpolate);
 </script>
 </body>

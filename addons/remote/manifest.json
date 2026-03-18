@@ -5,6 +5,7 @@
   "type": "backend",
   "description": "Control MusiCast from your phone — scan QR code to connect",
   "deps": [],
+  "autoload": false,
   "ui": {
     "component": "remote-qr",
     "entry": "ui/remote-qr.js",

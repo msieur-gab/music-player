@@ -309,7 +309,6 @@ class MusicApp extends HTMLElement {
     this._loadLibrary();
     trackStore.load(); // preload shared track data (non-blocking)
     this._startUpdateLoop();
-    playback.connectRemoteCommands();
   }
 
   disconnectedCallback() {

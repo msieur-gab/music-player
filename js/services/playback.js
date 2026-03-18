@@ -174,7 +174,7 @@ class PlaybackController {
         const status = await fetchStatus();
         const track = this._queue[this._queueIndex];
         if (status.state === 'idle' && track) {
-          return {
+          const s = {
             state: 'paused',
             currentTime: 0,
             duration: 0,
@@ -187,7 +187,10 @@ class PlaybackController {
             queueLength: this._queue.length,
             device: this._selectedDevice.name,
           };
+          this._pushState(s);
+          return s;
         }
+        this._pushState(status);
         return status;
       } catch {
         return { state: 'idle' };
@@ -218,6 +221,29 @@ class PlaybackController {
     return { state: 'idle' };
   }
 
+  /** Immediately snapshot local audio state and push to server. Sync, no awaits. */
+  pushStateNow() {
+    if (this._mode === 'cast') return; // cast state comes from server, not us
+    const track = this._queue[this._queueIndex];
+    if (track && this._audio.src) {
+      this._pushState({
+        state: this._audio.paused ? 'paused' : 'playing',
+        currentTime: this._audio.currentTime || 0,
+        duration: this._audio.duration || 0,
+        volume: this._audio.volume,
+        title: track.title,
+        artist: track.artist,
+        album: track.album,
+        cover: track.cover,
+        queueIndex: this._queueIndex,
+        queueLength: this._queue.length,
+        device: null,
+      });
+    } else {
+      this._pushState({ state: 'idle' });
+    }
+  }
+
   /** Push local playback state to server for remote. */
   _pushState(status) {
     fetch('/api/playback', {
@@ -225,32 +251,6 @@ class PlaybackController {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(status),
     }).catch(() => {});
-  }
-
-  /** Connect SSE stream for instant remote commands. */
-  connectRemoteCommands() {
-    if (this._remoteSse) return;
-    this._remoteSse = new EventSource('/api/playback/commands');
-    this._remoteSse.addEventListener('message', (e) => {
-      try {
-        const cmd = JSON.parse(e.data);
-        switch (cmd.action) {
-          case 'toggle': this.toggle(); break;
-          case 'play':   this.resume(); break;
-          case 'pause':  this.pause(); break;
-          case 'next':   this.next(); break;
-          case 'prev':   this.prev(); break;
-          case 'seek':   this.seek(cmd.value); break;
-          case 'volume': this.volume(cmd.value); break;
-        }
-      } catch {}
-    });
-    this._remoteSse.addEventListener('error', () => {
-      // Reconnect after a delay
-      this._remoteSse.close();
-      this._remoteSse = null;
-      setTimeout(() => this.connectRemoteCommands(), 2000);
-    });
   }
 
   // ── Private: local playback ──

@@ -98,6 +98,46 @@ class RemoteQR extends HTMLElement {
     this.shadowRoot.getElementById('scrim').addEventListener('click', () => {
       this.removeAttribute('open');
     });
+    this._connectCommandStream();
+  }
+
+  disconnectedCallback() {
+    if (this._cmdSse) {
+      this._cmdSse.close();
+      this._cmdSse = null;
+    }
+  }
+
+  /** Listen for remote commands via SSE and dispatch to playback service. */
+  async _connectCommandStream() {
+    if (this._cmdSse) return;
+    // Cache module reference — no async import per command
+    const { playback } = await import('/js/services/playback.js');
+    this._playback = playback;
+
+    this._cmdSse = new EventSource('/api/remote/commands');
+    this._cmdSse.addEventListener('message', (e) => {
+      try {
+        const cmd = JSON.parse(e.data);
+        const pb = this._playback;
+        switch (cmd.action) {
+          case 'toggle': pb.toggle(); break;
+          case 'play':   pb.resume(); break;
+          case 'pause':  pb.pause(); break;
+          case 'next':   pb.next(); break;
+          case 'prev':   pb.prev(); break;
+          case 'seek':   pb.seek(cmd.value); break;
+          case 'volume': pb.volume(cmd.value); break;
+        }
+        // Push state immediately so phone sees the effect without waiting for poll
+        pb.pushStateNow();
+      } catch {}
+    });
+    this._cmdSse.addEventListener('error', () => {
+      this._cmdSse.close();
+      this._cmdSse = null;
+      setTimeout(() => this._connectCommandStream(), 2000);
+    });
   }
 
   static get observedAttributes() { return ['open']; }

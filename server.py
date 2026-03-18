@@ -97,8 +97,7 @@ def get_lan_ip():
 
 _playback_state = {"state": "idle"}
 _playback_lock = threading.Lock()
-_playback_cmd_condition = threading.Condition()  # SSE wakes browser instantly
-_playback_cmd_queue = []
+_playback_state_condition = threading.Condition()  # notifies SSE subscribers on every state update
 
 # ---------------------------------------------------------------------------
 # Job tracker (shared infrastructure — used by analysis + addons)
@@ -513,8 +512,8 @@ class Handler(SimpleHTTPRequestHandler):
         elif path == '/api/playback':
             with _playback_lock:
                 self._json(dict(_playback_state))
-        elif path == '/api/playback/commands':
-            self._stream_playback_commands()
+        elif path == '/api/playback/stream':
+            self._stream_playback_state()
         elif path == '/api/library':
             self._json(scan_library())
         elif path == '/api/addons':
@@ -664,17 +663,12 @@ class Handler(SimpleHTTPRequestHandler):
 
         try:
             if path == '/api/playback':
-                if "command" in body:
-                    # Remote sending a command → push to SSE stream instantly
-                    with _playback_cmd_condition:
-                        _playback_cmd_queue.append(body["command"])
-                        _playback_cmd_condition.notify_all()
-                    self._json({"ok": True})
-                else:
-                    # Browser pushing its state
-                    with _playback_lock:
-                        _playback_state.update(body)
-                    self._json({"ok": True})
+                # Browser pushing its state
+                with _playback_lock:
+                    _playback_state.update(body)
+                with _playback_state_condition:
+                    _playback_state_condition.notify_all()
+                self._json({"ok": True})
 
             elif path == '/api/analyze':
                 job = _create_job("analyze")
@@ -768,27 +762,34 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _stream_playback_commands(self):
-        """SSE stream: browser connects, receives commands instantly from remote."""
+    def _stream_playback_state(self):
+        """SSE stream: sends full playback state snapshot on every change + 30s keepalive."""
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
         self.send_header('Cache-Control', 'no-cache')
         self.send_header('Connection', 'keep-alive')
         self.end_headers()
 
-        while True:
-            with _playback_cmd_condition:
-                while not _playback_cmd_queue:
-                    _playback_cmd_condition.wait(timeout=30)
-                cmds = _playback_cmd_queue[:]
-                _playback_cmd_queue.clear()
+        # Send current state immediately on connect
+        try:
+            with _playback_lock:
+                snapshot = dict(_playback_state)
+            self.wfile.write(f"data: {json.dumps(snapshot)}\n\n".encode())
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
-            for cmd in cmds:
-                try:
-                    self.wfile.write(f"data: {json.dumps(cmd)}\n\n".encode())
-                    self.wfile.flush()
-                except (BrokenPipeError, ConnectionResetError):
-                    return
+        while True:
+            with _playback_state_condition:
+                _playback_state_condition.wait(timeout=30)
+
+            try:
+                with _playback_lock:
+                    snapshot = dict(_playback_state)
+                self.wfile.write(f"data: {json.dumps(snapshot)}\n\n".encode())
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                return
 
     def _stream_sse(self, job):
         self.send_response(200)
