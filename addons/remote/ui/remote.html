@@ -881,14 +881,7 @@ function connectStateStream() {
   stateSource = new EventSource('/api/playback/stream');
   stateSource.addEventListener('message', (e) => {
     try {
-      const s = JSON.parse(e.data);
-      updateUI(s);
-      // If local is idle, check cast status as fallback
-      if (s.state === 'idle') {
-        fetch('/api/status').then(r => r.json()).then(cs => {
-          if (cs.state && cs.state !== 'idle') updateUI(cs);
-        }).catch(() => {});
-      }
+      updateUI(JSON.parse(e.data));
     } catch {}
   });
   stateSource.addEventListener('error', () => {
