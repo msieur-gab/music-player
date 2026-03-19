@@ -178,11 +178,20 @@ _addon_routes = {     # method → {path: (handler, match_type)}
 _addon_shutdowns = [] # shutdown callbacks
 
 
+def _push_playback_state(listener_id, state_dict):
+    """Push playback state for a listener — used by cast addon to bypass poll delay."""
+    entry = _get_listener_state(listener_id)
+    with entry["condition"]:
+        entry["state"].update(state_dict)
+        entry["condition"].notify_all()
+
+
 def _addon_ctx():
     """Build the context dict passed to addon register()."""
     return {
         "get_music_root": lambda: MUSIC_ROOT,
         "connect_db": lambda: _connect(MUSIC_ROOT),
+        "push_playback_state": _push_playback_state,
         "create_job": _create_job,
         "jobs": jobs,
         "jobs_lock": jobs_lock,

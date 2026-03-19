@@ -25,9 +25,10 @@ class _DeviceStatusListener:
 
 
 class CastManager:
-    def __init__(self, port=8000, get_lan_ip=None):
+    def __init__(self, port=8000, get_lan_ip=None, push_state=None):
         self._port = port
         self._get_lan_ip = get_lan_ip or (lambda: "127.0.0.1")
+        self._push_state = push_state  # callback(listener_id, state_dict) → push to SSE
         self._devices = {}       # uuid_str → Chromecast
         self._browser = None
         self._lock = threading.Lock()
@@ -286,6 +287,10 @@ class CastManager:
             if should_advance:
                 session["was_playing"] = False
 
+            # Push state directly to SSE — no poll delay
+            if self._push_state and not should_advance:
+                self._push_state(listener_id, self._build_status(session))
+
         # Advance outside the lock to avoid deadlock with pychromecast
         if should_advance:
             self._play_track(listener_id, session["qi"] + 1)
@@ -344,29 +349,22 @@ class CastManager:
         except Exception as e:
             return {"error": str(e)}
 
-    def get_status(self, listener_id="guest"):
-        with self._session_lock:
-            session = self._sessions.get(listener_id)
-            if not session or not session["device"]:
-                return {"state": "idle"}
-            cc = session["device"]
-            try:
-                track = session["queue"][session["qi"]] if 0 <= session["qi"] < len(session["queue"]) else {}
-                state = session["player_state"]
-                raw_time = session["current_time"]
-                duration = session["duration"]
-                last_ts = session["last_update_ts"]
-                qi = session["qi"]
-                queue_len = len(session["queue"])
-            except Exception:
-                return {"state": "idle"}
-
-        # Interpolate outside lock (no session access needed)
-        ct = raw_time
-        if state == "PLAYING" and last_ts:
-            ct = raw_time + (time.time() - last_ts)
-
+    def _build_status(self, session):
+        """Build a status dict from a session. Must be called under _session_lock."""
+        cc = session["device"]
+        if not cc:
+            return {"state": "idle"}
         try:
+            track = session["queue"][session["qi"]] if 0 <= session["qi"] < len(session["queue"]) else {}
+            state = session["player_state"]
+            raw_time = session["current_time"]
+            duration = session["duration"]
+            last_ts = session["last_update_ts"]
+
+            ct = raw_time
+            if state == "PLAYING" and last_ts:
+                ct = raw_time + (time.time() - last_ts)
+
             return {
                 "state": state.lower(),
                 "currentTime": ct,
@@ -376,12 +374,19 @@ class CastManager:
                 "artist": track.get("artist", ""),
                 "album": track.get("album", ""),
                 "cover": track.get("cover", ""),
-                "queueIndex": qi,
-                "queueLength": queue_len,
+                "queueIndex": session["qi"],
+                "queueLength": len(session["queue"]),
                 "device": cc.name,
             }
         except Exception:
             return {"state": "idle"}
+
+    def get_status(self, listener_id="guest"):
+        with self._session_lock:
+            session = self._sessions.get(listener_id)
+            if not session or not session["device"]:
+                return {"state": "idle"}
+            return self._build_status(session)
 
     def stop(self):
         # Stop all active sessions

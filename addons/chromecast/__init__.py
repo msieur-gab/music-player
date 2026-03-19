@@ -8,7 +8,11 @@ _cast_mgr = None
 def register(ctx):
     """Initialize Chromecast discovery and return route table."""
     global _cast_mgr
-    _cast_mgr = CastManager(port=ctx["port"], get_lan_ip=ctx["get_lan_ip"])
+    _cast_mgr = CastManager(
+        port=ctx["port"],
+        get_lan_ip=ctx["get_lan_ip"],
+        push_state=ctx.get("push_playback_state"),
+    )
 
     print("Discovering Chromecast devices...")
     _cast_mgr.start_discovery()
