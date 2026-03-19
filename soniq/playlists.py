@@ -162,12 +162,12 @@ def _mmr_order(candidates, target_vec, limit, diversity=0.3):
 # Saved playlists -- CRUD
 # ---------------------------------------------------------------------------
 
-def save_playlist(name, zone_id, track_keys, music_root):
+def save_playlist(name, zone_id, track_keys, music_root, listener_id="guest"):
     """Save a playlist. track_keys is a list of 'artist::album::title' keys."""
     conn = _connect(music_root)
     cur = conn.execute(
-        "INSERT INTO playlists (name, zone_id) VALUES (?, ?)",
-        (name, zone_id),
+        "INSERT INTO playlists (name, zone_id, listener_id) VALUES (?, ?, ?)",
+        (name, zone_id, listener_id),
     )
     playlist_id = cur.lastrowid
 
@@ -182,16 +182,17 @@ def save_playlist(name, zone_id, track_keys, music_root):
     return playlist_id
 
 
-def list_playlists(music_root):
-    """Return all saved playlists with track counts."""
+def list_playlists(music_root, listener_id="guest"):
+    """Return saved playlists for a listener, with track counts."""
     conn = _connect(music_root)
     rows = conn.execute("""
         SELECT p.id, p.name, p.zone_id, p.created_at, COUNT(pt.track_key) as track_count
         FROM playlists p
         LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
+        WHERE p.listener_id = ?
         GROUP BY p.id
         ORDER BY p.created_at DESC
-    """).fetchall()
+    """, (listener_id,)).fetchall()
     conn.close()
 
     return [{
@@ -259,10 +260,13 @@ def get_playlist(playlist_id, music_root):
     }
 
 
-def delete_playlist(playlist_id, music_root):
-    """Delete a saved playlist. CASCADE handles track rows."""
+def delete_playlist(playlist_id, music_root, listener_id="guest"):
+    """Delete a saved playlist. Only owner can delete. CASCADE handles track rows."""
     conn = _connect(music_root)
-    conn.execute("DELETE FROM playlists WHERE id = ?", (playlist_id,))
+    conn.execute(
+        "DELETE FROM playlists WHERE id = ? AND listener_id = ?",
+        (playlist_id, listener_id),
+    )
     conn.commit()
     conn.close()
     return True

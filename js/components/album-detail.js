@@ -1,3 +1,5 @@
+import { isFavorite, toggleFavorite, loadFavorites } from '../services/favorites.js';
+
 const tpl = document.createElement('template');
 tpl.innerHTML = `
 <style>
@@ -221,6 +223,35 @@ tpl.innerHTML = `
   stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
 }
 
+.fav-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px; height: 28px;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  margin-left: 4px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--transition), color var(--transition);
+}
+.track:hover .fav-btn { opacity: 1; }
+.fav-btn.active {
+  color: #e74c3c;
+  opacity: 1;
+}
+.fav-btn:hover { color: #e74c3c; }
+.fav-btn svg {
+  width: 16px; height: 16px;
+  stroke: currentColor;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+.fav-btn:not(.active) svg { fill: none; }
+.fav-btn.active svg { fill: currentColor; }
+
 @media (max-width: 600px) {
   .header { flex-direction: column; gap: 16px; }
   .cover, .cover-ph { width: 140px; height: 140px; }
@@ -292,6 +323,19 @@ class AlbumDetail extends HTMLElement {
     });
 
     this.shadowRoot.getElementById('tracks').addEventListener('click', (e) => {
+      // Heart button
+      if (e.target.closest('.fav-btn')) {
+        e.stopPropagation();
+        const btn = e.target.closest('.fav-btn');
+        const trackId = btn.dataset.trackId;
+        if (!trackId) return;
+        btn.disabled = true;
+        toggleFavorite(trackId).then(nowFav => {
+          btn.classList.toggle('active', nowFav);
+          btn.disabled = false;
+        });
+        return;
+      }
       // "Find similar" button
       if (e.target.closest('.similar-btn')) {
         e.stopPropagation();
@@ -310,6 +354,12 @@ class AlbumDetail extends HTMLElement {
       }
       const li = e.target.closest('.track');
       if (li) this._emitPlay(parseInt(li.dataset.index, 10));
+    });
+
+    // Re-render hearts after favorites cache is loaded for new listener
+    document.addEventListener('favorites-loaded', () => {
+      if (this._album) this._renderTracks();
+      if (this._playlist) this._renderPlaylistTracks();
     });
   }
 
@@ -442,6 +492,15 @@ class AlbumDetail extends HTMLElement {
         li.append(durSpan);
       }
 
+      // Heart button
+      const trackId = `${this._album.artist}::${this._album.album}::${name}`;
+      const favBtn = document.createElement('button');
+      favBtn.className = `fav-btn${isFavorite(trackId) ? ' active' : ''}`;
+      favBtn.dataset.trackId = trackId;
+      favBtn.title = 'Favorite';
+      favBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>';
+      li.append(favBtn);
+
       const simBtn = document.createElement('button');
       simBtn.className = 'similar-btn';
       simBtn.title = 'Find similar tracks';
@@ -479,6 +538,16 @@ class AlbumDetail extends HTMLElement {
 
       info.append(nameSpan, artistSpan);
       li.append(numSpan, info);
+
+      // Heart button for playlist tracks
+      const trackId = track.key || `${track.artist}::${track.album}::${track.title}`;
+      const favBtn = document.createElement('button');
+      favBtn.className = `fav-btn${isFavorite(trackId) ? ' active' : ''}`;
+      favBtn.dataset.trackId = trackId;
+      favBtn.title = 'Favorite';
+      favBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>';
+      li.append(favBtn);
+
       list.appendChild(li);
     });
   }

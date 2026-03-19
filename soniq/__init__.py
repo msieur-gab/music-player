@@ -12,3 +12,5 @@ from .similarity import (
     find_similar, find_by_harmony, get_mood_clusters, find_transitions,
 )
 from .scanner import analyze_library, migrate_from_json
+from .listeners import create_listener, list_listeners, delete_listener
+from .favorites import add_favorite, remove_favorite, get_favorite_ids, get_favorites_count, get_favorites_playlist

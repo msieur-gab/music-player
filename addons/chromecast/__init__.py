@@ -1,4 +1,4 @@
-"""Chromecast addon — cast music to Chromecast devices."""
+"""Chromecast addon — cast music to Chromecast devices (per-listener sessions)."""
 
 from .cast_manager import CastManager
 
@@ -31,15 +31,20 @@ def shutdown():
         _cast_mgr.stop()
 
 
+def _get_listener_id(handler):
+    """Extract listener ID from request header."""
+    return handler.headers.get('X-Listener-Id', 'guest')
+
+
 # -- Route handlers --
-# Each receives the HTTP request handler instance.
 
 def _handle_devices(handler):
     handler._json(_cast_mgr.list_devices())
 
 
 def _handle_status(handler):
-    handler._json(_cast_mgr.get_status())
+    lid = _get_listener_id(handler)
+    handler._json(_cast_mgr.get_status(listener_id=lid))
 
 
 def _handle_cast(handler):
@@ -48,10 +53,12 @@ def _handle_cast(handler):
     if not device_id:
         handler._json({"error": "Missing deviceId"}, 400)
         return
+    lid = _get_listener_id(handler)
     result = _cast_mgr.cast(
         device_id, body.get("track", {}),
         body.get("queue"), body.get("queueIndex", 0),
         body.get("baseUrl"),
+        listener_id=lid,
     )
     handler._json(result)
 
@@ -62,4 +69,5 @@ def _handle_control(handler):
     if not action:
         handler._json({"error": "Missing action"}, 400)
         return
-    handler._json(_cast_mgr.control(action, body.get("value")))
+    lid = _get_listener_id(handler)
+    handler._json(_cast_mgr.control(action, body.get("value"), listener_id=lid))

@@ -48,6 +48,9 @@ from soniq import (
     _connect, analyze_library, find_similar, get_zones, generate_playlist,
     migrate_from_json, find_by_harmony, get_mood_clusters, find_transitions,
     save_playlist, list_playlists, get_playlist, delete_playlist,
+    create_listener, list_listeners, delete_listener,
+    add_favorite, remove_favorite, get_favorite_ids,
+    get_favorites_count, get_favorites_playlist,
 )
 
 PORT = 8000
@@ -92,12 +95,28 @@ def get_lan_ip():
 
 
 # ---------------------------------------------------------------------------
-# Local playback state (pushed by browser, read by remote)
+# Per-listener playback state (pushed by browser, read by remote)
 # ---------------------------------------------------------------------------
 
-_playback_state = {"state": "idle"}
-_playback_lock = threading.Lock()
-_playback_state_condition = threading.Condition()  # notifies SSE subscribers on every state update
+_listener_states = {}  # listener_id → {"state": {...}, "condition": Condition()}
+_listener_states_lock = threading.Lock()  # protects dict creation only
+
+
+def _get_listener_state(listener_id):
+    """Get or create per-listener state entry. Thread-safe lazy init.
+
+    Fast path reads dict without lock — safe under CPython GIL.
+    Lock only protects creation to prevent duplicate entries.
+    """
+    if listener_id in _listener_states:
+        return _listener_states[listener_id]
+    with _listener_states_lock:
+        if listener_id not in _listener_states:
+            _listener_states[listener_id] = {
+                "state": {"state": "idle"},
+                "condition": threading.Condition(),
+            }
+        return _listener_states[listener_id]
 
 # ---------------------------------------------------------------------------
 # Job tracker (shared infrastructure — used by analysis + addons)
@@ -163,6 +182,7 @@ def _addon_ctx():
     """Build the context dict passed to addon register()."""
     return {
         "get_music_root": lambda: MUSIC_ROOT,
+        "connect_db": lambda: _connect(MUSIC_ROOT),
         "create_job": _create_job,
         "jobs": jobs,
         "jobs_lock": jobs_lock,
@@ -510,14 +530,26 @@ class Handler(SimpleHTTPRequestHandler):
                 "musicDir": MUSIC_ROOT,
             })
         elif path == '/api/playback':
-            with _playback_lock:
-                self._json(dict(_playback_state))
+            lid = self.headers.get('X-Listener-Id', 'guest')
+            entry = _get_listener_state(lid)
+            self._json(dict(entry["state"]))
         elif path == '/api/playback/stream':
-            self._stream_playback_state()
+            qs = parse_qs(urlparse(self.path).query)
+            lid = qs.get('listener', ['guest'])[0]
+            self._stream_playback_state(lid)
         elif path == '/api/library':
             self._json(scan_library())
         elif path == '/api/addons':
             self._json(_get_addons_list())
+        elif path == '/api/listeners':
+            self._json(list_listeners(MUSIC_ROOT))
+        elif path == '/api/favorites/ids':
+            qs = parse_qs(urlparse(self.path).query)
+            lid = qs.get('listener', [''])[0]
+            if not lid:
+                self._json({"error": "Missing listener param"}, 400)
+            else:
+                self._json(get_favorite_ids(lid, MUSIC_ROOT))
         elif path.startswith('/api/analyze/'):
             job_id = path.split('/')[-1]
             with jobs_lock:
@@ -580,14 +612,13 @@ class Handler(SimpleHTTPRequestHandler):
                     f"SELECT * FROM tracks ORDER BY {sort} {direction} LIMIT ? OFFSET ?",
                     (per_page, (page - 1) * per_page)
                 ).fetchall()
-            import json as _json
             tracks_list = []
             for r in rows:
                 track = {k: r[k] for k in r.keys()}
                 for jcol in ('mfcc_mean_json', 'chroma_mean_json',
                              'tonnetz_mean_json', 'cls_json'):
                     if jcol in track and isinstance(track[jcol], str):
-                        track[jcol] = _json.loads(track[jcol])
+                        track[jcol] = json.loads(track[jcol])
                 tracks_list.append(track)
             conn.close()
             self._json({"tracks": tracks_list, "total": total, "page": page, "per_page": per_page})
@@ -618,7 +649,34 @@ class Handler(SimpleHTTPRequestHandler):
             except FileNotFoundError:
                 self._json({"current": os.path.expanduser('~'), "dirs": [], "error": "Not found"})
         elif path == '/api/playlists':
-            self._json(list_playlists(MUSIC_ROOT))
+            lid = self.headers.get('X-Listener-Id', 'guest')
+            playlists = list_playlists(MUSIC_ROOT, listener_id=lid)
+            # Inject virtual Favorites playlist at the top
+            fav_count = get_favorites_count(lid, MUSIC_ROOT)
+            if fav_count > 0:
+                playlists.insert(0, {
+                    "id": "favorites",
+                    "name": "Favorites",
+                    "zone": "",
+                    "zoneLabel": "",
+                    "trackCount": fav_count,
+                    "createdAt": "",
+                    "virtual": True,
+                })
+            self._json(playlists)
+        elif path == '/api/playlists/favorites':
+            lid = self.headers.get('X-Listener-Id', 'guest')
+            tracks = get_favorites_playlist(lid, MUSIC_ROOT)
+            self._json({
+                "id": "favorites",
+                "name": "Favorites",
+                "zone": "",
+                "zoneLabel": "",
+                "zoneDesc": "",
+                "trackCount": len(tracks),
+                "createdAt": "",
+                "tracks": tracks,
+            })
         elif path.startswith('/api/playlists/'):
             try:
                 pid = int(path.split('/')[-1])
@@ -663,11 +721,12 @@ class Handler(SimpleHTTPRequestHandler):
 
         try:
             if path == '/api/playback':
-                # Browser pushing its state
-                with _playback_lock:
-                    _playback_state.update(body)
-                with _playback_state_condition:
-                    _playback_state_condition.notify_all()
+                # Browser pushing its state (per-listener)
+                lid = self.headers.get('X-Listener-Id', 'guest')
+                entry = _get_listener_state(lid)
+                with entry["condition"]:
+                    entry["state"].update(body)
+                    entry["condition"].notify_all()
                 self._json({"ok": True})
 
             elif path == '/api/analyze':
@@ -699,8 +758,29 @@ class Handler(SimpleHTTPRequestHandler):
                 if not name or not tracks:
                     self._json({"error": "Missing name or tracks"}, 400)
                     return
-                pid = save_playlist(name, zone, tracks, MUSIC_ROOT)
+                lid = self.headers.get('X-Listener-Id', 'guest')
+                pid = save_playlist(name, zone, tracks, MUSIC_ROOT, listener_id=lid)
                 self._json({"id": pid, "ok": True})
+
+            elif path == '/api/listeners':
+                name = body.get("name", "").strip()
+                if not name:
+                    self._json({"error": "Missing name"}, 400)
+                    return
+                try:
+                    listener = create_listener(name, MUSIC_ROOT)
+                    self._json(listener)
+                except ValueError as e:
+                    self._json({"error": str(e)}, 400)
+
+            elif path == '/api/favorites':
+                lid = body.get("listener_id", "")
+                tid = body.get("track_id", "")
+                if not lid or not tid:
+                    self._json({"error": "Missing listener_id or track_id"}, 400)
+                    return
+                add_favorite(lid, tid, MUSIC_ROOT)
+                self._json({"ok": True})
 
             elif path == '/api/addons/install':
                 addon_id = body.get("id", "")
@@ -737,13 +817,38 @@ class Handler(SimpleHTTPRequestHandler):
                     pass
                 return
 
-        if path.startswith('/api/playlists/'):
+        if path.startswith('/api/listeners/'):
+            lid = path.split('/')[-1]
+            if not lid:
+                self._json({"error": "Missing listener id"}, 400)
+                return
+            try:
+                delete_listener(lid, MUSIC_ROOT)
+                self._json({"ok": True})
+            except ValueError as e:
+                self._json({"error": str(e)}, 400)
+
+        elif path == '/api/favorites':
+            try:
+                body = self._read_body()
+            except Exception:
+                body = {}
+            lid = body.get("listener_id", "")
+            tid = body.get("track_id", "")
+            if not lid or not tid:
+                self._json({"error": "Missing listener_id or track_id"}, 400)
+                return
+            remove_favorite(lid, tid, MUSIC_ROOT)
+            self._json({"ok": True})
+
+        elif path.startswith('/api/playlists/'):
             try:
                 pid = int(path.split('/')[-1])
             except ValueError:
                 self._json({"error": "Invalid id"}, 400)
                 return
-            delete_playlist(pid, MUSIC_ROOT)
+            lid = self.headers.get('X-Listener-Id', 'guest')
+            delete_playlist(pid, MUSIC_ROOT, listener_id=lid)
             self._json({"ok": True})
         else:
             self.send_error(404)
@@ -762,31 +867,29 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _stream_playback_state(self):
-        """SSE stream: sends full playback state snapshot on every change + 30s keepalive."""
+    def _stream_playback_state(self, listener_id='guest'):
+        """SSE stream: sends per-listener playback state on every change + 30s keepalive."""
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
         self.send_header('Cache-Control', 'no-cache')
         self.send_header('Connection', 'keep-alive')
         self.end_headers()
 
+        entry = _get_listener_state(listener_id)
+
         # Send current state immediately on connect
         try:
-            with _playback_lock:
-                snapshot = dict(_playback_state)
-            self.wfile.write(f"data: {json.dumps(snapshot)}\n\n".encode())
+            self.wfile.write(f"data: {json.dumps(dict(entry['state']))}\n\n".encode())
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             return
 
         while True:
-            with _playback_state_condition:
-                _playback_state_condition.wait(timeout=30)
+            with entry["condition"]:
+                entry["condition"].wait(timeout=30)
 
             try:
-                with _playback_lock:
-                    snapshot = dict(_playback_state)
-                self.wfile.write(f"data: {json.dumps(snapshot)}\n\n".encode())
+                self.wfile.write(f"data: {json.dumps(dict(entry['state']))}\n\n".encode())
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
                 return

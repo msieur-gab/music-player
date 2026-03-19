@@ -683,6 +683,11 @@ input[type="range"]::-moz-range-thumb {
 <script>
 const $ = id => document.getElementById(id);
 
+// ── Listener identity (from QR URL) ──
+const urlParams = new URLSearchParams(window.location.search);
+const listenerId = urlParams.get('listener') || 'guest';
+const listenerHeaders = { 'Content-Type': 'application/json', 'X-Listener-Id': listenerId };
+
 // ── State ──
 let state = 'idle';
 let currentTime = 0;
@@ -709,13 +714,13 @@ async function control(action, value) {
     if (isCasting) {
       await fetch('/api/control', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: listenerHeaders,
         body: JSON.stringify({ action, value }),
       });
     } else {
       await fetch('/api/remote/command', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: listenerHeaders,
         body: JSON.stringify({ action, value }),
       });
     }
@@ -815,6 +820,7 @@ function updateUI(s) {
     $('idle').classList.add('active');
     $('player').classList.add('hidden');
     $('dot').classList.add('idle');
+    $('device').textContent = listenerName !== 'Remote' ? `${listenerName}'s Remote` : 'Remote';
     state = 'idle';
     return;
   }
@@ -878,7 +884,7 @@ function updateUI(s) {
 let stateSource = null;
 
 function connectStateStream() {
-  stateSource = new EventSource('/api/playback/stream');
+  stateSource = new EventSource(`/api/playback/stream?listener=${encodeURIComponent(listenerId)}`);
   stateSource.addEventListener('message', (e) => {
     try {
       updateUI(JSON.parse(e.data));
@@ -909,7 +915,7 @@ const placeholderSvg = '<svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><cir
 
 async function loadPlaylists() {
   try {
-    const r = await fetch('/api/playlists');
+    const r = await fetch('/api/playlists', { headers: listenerHeaders });
     const playlists = await r.json();
     const carousel = $('pl-carousel');
     const empty = $('pl-empty');
@@ -936,7 +942,7 @@ async function loadPlaylists() {
       `;
 
       // Load first track's cover
-      fetch(`/api/playlists/${pl.id}`).then(r => r.json()).then(data => {
+      fetch(`/api/playlists/${pl.id}`, { headers: listenerHeaders }).then(r => r.json()).then(data => {
         if (data?.tracks?.length) {
           const cover = data.tracks[0].cover;
           if (cover) {
@@ -953,7 +959,7 @@ async function loadPlaylists() {
       card.addEventListener('click', () => {
         fetch('/api/remote/command', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: listenerHeaders,
           body: JSON.stringify({ action: 'play-playlist', value: pl.id }),
         }).catch(() => {});
         $('snap').scrollTo({ top: 0, behavior: 'smooth' });
@@ -977,7 +983,7 @@ let hasCastAddon = false;
 
 async function checkCastAddon() {
   try {
-    const r = await fetch('/api/devices');
+    const r = await fetch('/api/devices', { headers: listenerHeaders });
     if (r.ok) {
       hasCastAddon = true;
       $('device').classList.add('has-cast');
@@ -1001,7 +1007,7 @@ async function openDeviceSheet() {
   sheet.classList.add('open');
 
   try {
-    const r = await fetch('/api/devices');
+    const r = await fetch('/api/devices', { headers: listenerHeaders });
     const devices = await r.json();
 
     list.innerHTML = '';
@@ -1043,7 +1049,7 @@ function createDeviceItem(dev, isActive) {
   item.addEventListener('click', () => {
     fetch('/api/remote/command', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: listenerHeaders,
       body: JSON.stringify({ action: 'select-device', value: dev }),
     }).catch(() => {});
     $('device-sheet').classList.remove('open');
@@ -1059,6 +1065,18 @@ document.addEventListener('visibilitychange', () => {
     connectStateStream();
   }
 });
+
+// Show listener name in header (from QR URL)
+let listenerName = 'Remote';
+if (listenerId && listenerId !== 'guest') {
+  fetch('/api/listeners').then(r => r.json()).then(listeners => {
+    const me = listeners.find(l => l.id === listenerId);
+    if (me) {
+      listenerName = me.name;
+      if (state === 'idle') $('device').textContent = `${me.name}'s Remote`;
+    }
+  }).catch(() => {});
+}
 
 // ── Init ──
 setupMediaSession();

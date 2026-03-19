@@ -1,13 +1,27 @@
 """
 Chromecast discovery + control via pychromecast.
 
-Media status via event listener (no polling threads).
-Queue managed server-side — play one track at a time, auto-advance on finish.
+Per-listener sessions — each listener owns their own device, queue, and state.
+Device-to-listener reverse map prevents conflicts.
 """
 
 import socket
 import threading
 import time
+
+
+class _DeviceStatusListener:
+    """Per-device pychromecast status listener that routes to CastManager with device UUID."""
+
+    def __init__(self, manager, device_uuid):
+        self._manager = manager
+        self._device_uuid = device_uuid
+
+    def new_media_status(self, status):
+        self._manager._on_media_status(self._device_uuid, status)
+
+    def load_media_failed(self, queue_item_id, error_code):
+        print(f"  Cast media load failed on {self._device_uuid}: item {queue_item_id}, error {error_code}")
 
 
 class CastManager:
@@ -17,18 +31,28 @@ class CastManager:
         self._devices = {}       # uuid_str → Chromecast
         self._browser = None
         self._lock = threading.Lock()
-        self._active = None      # currently casting Chromecast
-        self._queue = []
-        self._qi = -1
-        self._base_url = None
 
-        # Status cache — updated by listener
-        self._status_lock = threading.Lock()
-        self._player_state = "IDLE"
-        self._current_time = 0
-        self._duration = 0
-        self._last_update_ts = 0
-        self._was_playing = False  # for auto-advance detection
+        # Per-listener sessions
+        self._sessions = {}           # listener_id → session dict
+        self._device_to_listener = {} # device_uuid → listener_id
+        self._device_listeners = {}   # device_uuid → _DeviceStatusListener
+        self._session_lock = threading.Lock()
+
+    def _get_session(self, listener_id):
+        """Get or create a session for a listener."""
+        if listener_id not in self._sessions:
+            self._sessions[listener_id] = {
+                "device": None,       # Chromecast object
+                "queue": [],
+                "qi": -1,
+                "base_url": None,
+                "player_state": "IDLE",
+                "current_time": 0,
+                "duration": 0,
+                "last_update_ts": 0,
+                "was_playing": False,
+            }
+        return self._sessions[listener_id]
 
     # -- Discovery --
 
@@ -119,54 +143,77 @@ class CastManager:
 
     def list_devices(self):
         with self._lock:
-            return [
-                {
+            devices = []
+            for uid, cc in self._devices.items():
+                owner = self._device_to_listener.get(uid)
+                devices.append({
                     "id": uid,
                     "name": cc.name,
                     "model": cc.model_name,
-                    "is_active": self._active and str(self._active.uuid) == uid,
-                }
-                for uid, cc in self._devices.items()
-            ]
+                    "owned_by": owner,
+                })
+            return devices
 
-    # -- Cast --
+    # -- Cast (per-listener) --
 
-    def cast(self, device_id, track, queue=None, queue_index=0, base_url=None):
-        if base_url:
-            self._base_url = base_url
-        try:
+    def cast(self, device_id, track, queue=None, queue_index=0, base_url=None, listener_id="guest"):
+        with self._session_lock:
+            # Check if another listener owns this device
+            current_owner = self._device_to_listener.get(device_id)
+            if current_owner and current_owner != listener_id:
+                return {"error": f"Device in use by another listener"}
+
             with self._lock:
                 cc = self._devices.get(device_id)
             if not cc:
                 return {"error": "Device not found"}
-            cc.wait(timeout=10)
 
-            # Quit app on previous device if switching
-            if self._active and self._active.uuid != cc.uuid:
+            session = self._get_session(listener_id)
+
+            # If this listener had a different device, release it
+            old_device = session["device"]
+            if old_device and str(old_device.uuid) != device_id:
+                old_uuid = str(old_device.uuid)
                 try:
-                    self._active.quit_app()
+                    old_device.quit_app()
                 except Exception:
                     pass
+                self._device_to_listener.pop(old_uuid, None)
 
-            self._active = cc
-            self._queue = queue or [track]
-            self._qi = queue_index
+            session["device"] = cc
+            session["queue"] = queue or [track]
+            session["qi"] = queue_index
+            session["was_playing"] = False  # prevent stale auto-advance after reassignment
+            if base_url:
+                session["base_url"] = base_url
 
-            # Register status listener (pychromecast deduplicates)
-            cc.media_controller.register_status_listener(self)
+            self._device_to_listener[device_id] = listener_id
 
-            self._play_track(cc, self._qi)
+        try:
+            cc.wait(timeout=10)
+            # Register per-device status listener (captures device_id for reverse lookup)
+            if device_id not in self._device_listeners:
+                dl = _DeviceStatusListener(self, device_id)
+                self._device_listeners[device_id] = dl
+                cc.media_controller.register_status_listener(dl)
+
+            self._play_track(listener_id, queue_index)
             return {"ok": True, "device": cc.name}
         except Exception as e:
             return {"error": str(e)}
 
-    def _play_track(self, cc, index):
-        """Play a single track by queue index."""
-        if index < 0 or index >= len(self._queue):
+    def _play_track(self, listener_id, index):
+        """Play a single track by queue index for a specific listener."""
+        session = self._sessions.get(listener_id)
+        if not session or not session["device"]:
             return
-        self._qi = index
-        track = self._queue[index]
-        url, base = self._resolve_url(track)
+        cc = session["device"]
+        queue = session["queue"]
+        if index < 0 or index >= len(queue):
+            return
+        session["qi"] = index
+        track = queue[index]
+        url, base = self._resolve_url(track, session)
         title = track.get("title", "")
         artist = track.get("artist", "")
         album = track.get("album", "")
@@ -186,7 +233,7 @@ class CastManager:
         if "100.115." in url or "localhost" in url or "127.0.0.1" in url:
             print(f"  WARNING: Media URL may be unreachable by Chromecast: {url}")
 
-        print(f"  Casting to {cc.name}: {title} ({index + 1}/{len(self._queue)})")
+        print(f"  Casting to {cc.name} [{listener_id}]: {title} ({index + 1}/{len(queue)})")
 
         mc = cc.media_controller
         mc.play_media(
@@ -195,60 +242,61 @@ class CastManager:
             stream_type="BUFFERED",
             metadata=meta,
         )
-        with self._status_lock:
-            self._was_playing = False
+        session["was_playing"] = False
         try:
             mc.block_until_active(timeout=10)
         except Exception:
             print(f"  Cast media did not become active within 10s")
 
-    def _resolve_url(self, track):
+    def _resolve_url(self, track, session):
         """Build absolute URL for a track."""
         url = track.get("url", "")
-        base = self._base_url or f"http://{self._get_lan_ip()}:{self._port}"
+        base = session.get("base_url") or f"http://{self._get_lan_ip()}:{self._port}"
         if url.startswith("/"):
             url = base + url
         return url, base
 
-    # -- Media status listener (called by pychromecast on events) --
+    # -- Media status (routed from per-device listeners) --
 
-    def new_media_status(self, status):
-        """Called by pychromecast when media status changes."""
-        with self._status_lock:
-            prev_state = self._player_state
-            self._player_state = status.player_state or "IDLE"
-            self._current_time = status.current_time or 0
-            self._duration = status.duration or 0
-            self._last_update_ts = time.time()
+    def _on_media_status(self, device_uuid, status):
+        """Handle media status update for a specific device."""
+        with self._session_lock:
+            listener_id = self._device_to_listener.get(device_uuid)
+            if not listener_id:
+                return
 
-            if self._player_state == "PLAYING":
-                self._was_playing = True
+            session = self._sessions.get(listener_id)
+            if not session:
+                return
+
+            session["player_state"] = status.player_state or "IDLE"
+            session["current_time"] = status.current_time or 0
+            session["duration"] = status.duration or 0
+            session["last_update_ts"] = time.time()
+
+            if session["player_state"] == "PLAYING":
+                session["was_playing"] = True
 
             # Auto-advance: was playing, now idle → track finished
             should_advance = (
-                self._was_playing
-                and self._player_state == "IDLE"
-                and self._qi < len(self._queue) - 1
+                session["was_playing"]
+                and session["player_state"] == "IDLE"
+                and session["qi"] < len(session["queue"]) - 1
             )
             if should_advance:
-                self._was_playing = False
+                session["was_playing"] = False
 
-        # Advance outside the lock to avoid deadlock
+        # Advance outside the lock to avoid deadlock with pychromecast
         if should_advance:
-            cc = self._active
-            if cc:
-                self._play_track(cc, self._qi + 1)
+            self._play_track(listener_id, session["qi"] + 1)
 
-    def load_media_failed(self, queue_item_id, error_code):
-        """Called by pychromecast when media fails to load."""
-        print(f"  Cast media load failed: item {queue_item_id}, error {error_code}")
+    # -- Control (per-listener) --
 
-    # -- Control --
-
-    def control(self, action, value=None):
-        cc = self._active
-        if not cc:
-            return {"error": "No active device"}
+    def control(self, action, value=None, listener_id="guest"):
+        session = self._sessions.get(listener_id)
+        if not session or not session["device"]:
+            return {"error": "No active device for this listener"}
+        cc = session["device"]
         mc = cc.media_controller
         try:
             if action == "play":
@@ -256,16 +304,14 @@ class CastManager:
             elif action == "pause":
                 mc.pause()
             elif action == "toggle":
-                with self._status_lock:
-                    state = self._player_state
+                state = session["player_state"]
                 if state == "PLAYING":
                     mc.pause()
                 else:
                     mc.play()
             elif action == "stop":
-                with self._status_lock:
-                    self._was_playing = False
-                    self._player_state = "IDLE"
+                session["was_playing"] = False
+                session["player_state"] = "IDLE"
                 try:
                     mc.stop()
                 except Exception:
@@ -274,19 +320,22 @@ class CastManager:
                     cc.quit_app()
                 except Exception:
                     pass
-                self._active = None
-                self._queue = []
-                self._qi = -1
+                # Release device
+                with self._session_lock:
+                    device_uuid = str(cc.uuid)
+                    self._device_to_listener.pop(device_uuid, None)
+                session["device"] = None
+                session["queue"] = []
+                session["qi"] = -1
             elif action == "next":
-                if self._qi < len(self._queue) - 1:
-                    self._play_track(cc, self._qi + 1)
+                if session["qi"] < len(session["queue"]) - 1:
+                    self._play_track(listener_id, session["qi"] + 1)
             elif action == "prev":
-                with self._status_lock:
-                    ct = self._current_time
+                ct = session["current_time"]
                 if ct and ct > 3:
                     mc.seek(0)
-                elif self._qi > 0:
-                    self._play_track(cc, self._qi - 1)
+                elif session["qi"] > 0:
+                    self._play_track(listener_id, session["qi"] - 1)
             elif action == "seek" and value is not None:
                 mc.seek(float(value))
             elif action == "volume" and value is not None:
@@ -295,24 +344,29 @@ class CastManager:
         except Exception as e:
             return {"error": str(e)}
 
-    def get_status(self):
-        cc = self._active
-        if not cc:
-            return {"state": "idle"}
+    def get_status(self, listener_id="guest"):
+        with self._session_lock:
+            session = self._sessions.get(listener_id)
+            if not session or not session["device"]:
+                return {"state": "idle"}
+            cc = session["device"]
+            try:
+                track = session["queue"][session["qi"]] if 0 <= session["qi"] < len(session["queue"]) else {}
+                state = session["player_state"]
+                raw_time = session["current_time"]
+                duration = session["duration"]
+                last_ts = session["last_update_ts"]
+                qi = session["qi"]
+                queue_len = len(session["queue"])
+            except Exception:
+                return {"state": "idle"}
+
+        # Interpolate outside lock (no session access needed)
+        ct = raw_time
+        if state == "PLAYING" and last_ts:
+            ct = raw_time + (time.time() - last_ts)
+
         try:
-            track = self._queue[self._qi] if 0 <= self._qi < len(self._queue) else {}
-
-            with self._status_lock:
-                state = self._player_state
-                raw_time = self._current_time
-                duration = self._duration
-                last_ts = self._last_update_ts
-
-            # Interpolate position between listener updates
-            ct = raw_time
-            if state == "PLAYING" and last_ts:
-                ct = raw_time + (time.time() - last_ts)
-
             return {
                 "state": state.lower(),
                 "currentTime": ct,
@@ -322,19 +376,21 @@ class CastManager:
                 "artist": track.get("artist", ""),
                 "album": track.get("album", ""),
                 "cover": track.get("cover", ""),
-                "queueIndex": self._qi,
-                "queueLength": len(self._queue),
+                "queueIndex": qi,
+                "queueLength": queue_len,
                 "device": cc.name,
             }
         except Exception:
             return {"state": "idle"}
 
     def stop(self):
-        if self._active:
-            try:
-                self._active.media_controller.stop()
-            except Exception:
-                pass
+        # Stop all active sessions
+        for lid, session in self._sessions.items():
+            if session["device"]:
+                try:
+                    session["device"].media_controller.stop()
+                except Exception:
+                    pass
         if self._browser:
             self._browser.stop_discovery()
         with self._lock:
@@ -344,4 +400,5 @@ class CastManager:
                 except Exception:
                     pass
             self._devices.clear()
-        self._active = None
+        self._sessions.clear()
+        self._device_to_listener.clear()

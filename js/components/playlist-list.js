@@ -154,6 +154,7 @@ tpl.innerHTML = `
 `;
 
 const listSvg = `<svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>`;
+const heartSvg = `<svg viewBox="0 0 24 24" style="fill:#e74c3c;stroke:#e74c3c"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>`;
 const xSvg = `<svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
 
 function relativeDate(isoStr) {
@@ -205,15 +206,20 @@ class PlaylistList extends HTMLElement {
     for (const pl of this._playlists) {
       const card = document.createElement('div');
       card.className = 'card';
+      const isVirtual = pl.virtual;
+      const icon = isVirtual ? heartSvg : listSvg;
+      const meta = isVirtual
+        ? `${pl.trackCount} track${pl.trackCount !== 1 ? 's' : ''}`
+        : `${pl.trackCount} tracks \u2022 ${relativeDate(pl.createdAt)}`;
 
       card.innerHTML = `
-        <div class="card-icon">${listSvg}</div>
+        <div class="card-icon">${icon}</div>
         <div class="card-info">
           <div class="card-name"></div>
           ${pl.zoneLabel ? `<div class="card-zone">${pl.zoneLabel}</div>` : ''}
-          <div class="card-meta">${pl.trackCount} tracks \u2022 ${relativeDate(pl.createdAt)}</div>
+          <div class="card-meta">${meta}</div>
         </div>
-        <button class="delete-btn" title="Delete">${xSvg}</button>
+        ${isVirtual ? '' : `<button class="delete-btn" title="Delete">${xSvg}</button>`}
       `;
 
       // Set name via textContent to escape HTML
@@ -228,14 +234,17 @@ class PlaylistList extends HTMLElement {
         }));
       });
 
-      // Delete click
-      card.querySelector('.delete-btn').addEventListener('click', (e) => {
-        e.stopPropagation();
-        this.dispatchEvent(new CustomEvent('playlist-delete', {
-          bubbles: true, composed: true,
-          detail: { id: pl.id, name: pl.name },
-        }));
-      });
+      // Delete click (not on virtual playlists)
+      const delBtn = card.querySelector('.delete-btn');
+      if (delBtn) {
+        delBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.dispatchEvent(new CustomEvent('playlist-delete', {
+            bubbles: true, composed: true,
+            detail: { id: pl.id, name: pl.name },
+          }));
+        });
+      }
 
       grid.appendChild(card);
     }

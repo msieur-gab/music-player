@@ -91,7 +91,6 @@ class RemoteQR extends HTMLElement {
     super();
     this.attachShadow({ mode: 'open' });
     this.shadowRoot.appendChild(tpl.content.cloneNode(true));
-    this._rendered = false;
   }
 
   connectedCallback() {
@@ -99,6 +98,15 @@ class RemoteQR extends HTMLElement {
       this.removeAttribute('open');
     });
     this._connectCommandStream();
+
+    // Reconnect SSE when listener changes
+    document.addEventListener('listener-change', () => {
+      if (this._cmdSse) {
+        this._cmdSse.close();
+        this._cmdSse = null;
+      }
+      this._connectCommandStream();
+    });
   }
 
   disconnectedCallback() {
@@ -112,11 +120,16 @@ class RemoteQR extends HTMLElement {
   /** Listen for remote commands via SSE and dispatch to playback service. */
   async _connectCommandStream() {
     if (this._cmdSse || this._disposed) return;
-    // Cache module reference — no async import per command
+    // Cache module references — no async import per command
     const { playback } = await import('/js/services/playback.js');
+    const { getListenerId } = await import('/js/services/listener.js');
+    const { listenerHeaders } = await import('/js/services/api.js');
     this._playback = playback;
+    this._getListenerId = getListenerId;
+    this._listenerHeaders = listenerHeaders;
 
-    this._cmdSse = new EventSource('/api/remote/commands');
+    const lid = getListenerId() || 'guest';
+    this._cmdSse = new EventSource(`/api/remote/commands?listener=${encodeURIComponent(lid)}`);
     this._cmdSse.addEventListener('message', (e) => {
       try {
         const cmd = JSON.parse(e.data);
@@ -130,7 +143,7 @@ class RemoteQR extends HTMLElement {
           case 'seek':   pb.seek(cmd.value); break;
           case 'volume': pb.volume(cmd.value); break;
           case 'play-playlist':
-            fetch(`/api/playlists/${cmd.value}`).then(r => r.json()).then(data => {
+            fetch(`/api/playlists/${cmd.value}`, { headers: this._listenerHeaders() }).then(r => r.json()).then(data => {
               if (data && data.tracks && data.tracks.length) pb.play(data.tracks);
             }).catch(() => {});
             return; // async — pushStateNow will fire from play()
@@ -152,7 +165,8 @@ class RemoteQR extends HTMLElement {
   static get observedAttributes() { return ['open']; }
 
   attributeChangedCallback(name, old, val) {
-    if (name === 'open' && val !== null && !this._rendered) {
+    if (name === 'open' && val !== null) {
+      // Re-render every time — listener may have changed
       this._render();
     }
   }
@@ -165,11 +179,13 @@ class RemoteQR extends HTMLElement {
       const saved = localStorage.getItem('musicast-lan-ip');
       const ip = saved || (cfg.lanIp && !cfg.lanIp.startsWith('100.115.') ? cfg.lanIp : location.hostname);
       const port = cfg.port || location.port || 8000;
-      const url = `http://${ip}:${port}/addons/remote/ui/remote.html`;
+      const lid = this._getListenerId ? this._getListenerId() : 'guest';
+      const url = `http://${ip}:${port}/addons/remote/ui/remote.html?listener=${encodeURIComponent(lid)}`;
 
       this.shadowRoot.getElementById('url').textContent = url;
 
       const container = this.shadowRoot.getElementById('qr-container');
+      container.innerHTML = ''; // Clear previous QR
       new QRCode(container, {
         text: url,
         width: 200,
@@ -179,7 +195,6 @@ class RemoteQR extends HTMLElement {
         correctLevel: QRCode.CorrectLevel.L,
       });
 
-      this._rendered = true;
     } catch {
       this.shadowRoot.getElementById('url').textContent = 'Could not detect LAN address';
     }

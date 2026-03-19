@@ -390,13 +390,13 @@ class HomeView extends HTMLElement {
   _renderGreeting() {
     const h = new Date().getHours();
     const base = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
-    const name = this._userName || localStorage.getItem('musicast-username') || '';
+    const name = this._userName || '';
     const greeting = this.shadowRoot.getElementById('greeting');
 
-    if (name) {
+    if (name && name !== 'Guest') {
       greeting.innerHTML = `<h1>${base}, <span class="name">${name}</span></h1>`;
     } else {
-      greeting.innerHTML = `<h1>${base}</h1><div class="sub">Set your name in settings</div>`;
+      greeting.innerHTML = `<h1>${base}</h1>`;
     }
   }
 

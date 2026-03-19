@@ -3,6 +3,8 @@ import { loadAddons } from '../services/addons.js';
 import { playback } from '../services/playback.js';
 import { trackStore } from '../services/track-store.js';
 import { applyTheme, applyThemeAll, onThemeChange } from '../services/theme-bridge.js';
+import { getListenerId, getActiveListener, clearListener } from '../services/listener.js';
+import { loadFavorites } from '../services/favorites.js';
 import './nav-rail.js';
 import './home-view.js';
 import './album-grid.js';
@@ -11,6 +13,7 @@ import './playlist-list.js';
 import './now-playing.js';
 import './settings-panel.js';
 import './addon-manager.js';
+import './listener-gate.js';
 
 const tpl = document.createElement('template');
 tpl.innerHTML = `
@@ -115,6 +118,7 @@ album-detail {
 <span id="addon-container"></span>
 <settings-panel id="settings"></settings-panel>
 <addon-manager id="addon-manager"></addon-manager>
+<listener-gate id="gate"></listener-gate>
 `;
 
 class MusicApp extends HTMLElement {
@@ -290,10 +294,6 @@ class MusicApp extends HTMLElement {
     });
 
     // ── Settings events ──
-    $('settings').addEventListener('username-change', (e) => {
-      $('home').userName = e.detail.name;
-    });
-
     $('settings').addEventListener('musicdir-change', () => {
       this._loadLibrary();
     });
@@ -302,19 +302,44 @@ class MusicApp extends HTMLElement {
       playback.resetCastUrl();
     });
 
+    $('settings').addEventListener('switch-listener', () => {
+      clearListener();
+      this._showGate();
+    });
+
+    // ── Listener gate ──
+    $('gate').addEventListener('listener-selected', (e) => {
+      this._onListenerReady(e.detail);
+    });
+
     // Restore theme
     const savedTheme = localStorage.getItem('musicast-theme');
     if (savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
     $('rail').updateThemeIcon(savedTheme === 'dark');
 
-    // Set greeting name
-    $('home').userName = localStorage.getItem('musicast-username') || '';
+    // Check if listener is already set (sessionStorage survives refresh)
+    if (getListenerId()) {
+      this._onListenerReady(getActiveListener());
+    } else {
+      this._showGate();
+    }
+  }
 
-    // Load addons, library, track store, and start UI update loop
+  _showGate() {
+    this.shadowRoot.getElementById('gate').show();
+  }
+
+  _onListenerReady(listener) {
+    const $ = id => this.shadowRoot.getElementById(id);
+    // Set greeting name from listener
+    $('home').userName = listener?.name || '';
+
+    // Load everything
     this._loadAddons();
     this._loadLibrary();
-    trackStore.load(); // preload shared track data (non-blocking)
-    this._startUpdateLoop();
+    trackStore.load();
+    loadFavorites();
+    if (!this._pollId) this._startUpdateLoop();
   }
 
   disconnectedCallback() {

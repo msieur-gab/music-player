@@ -8,7 +8,7 @@
  * Cast is a backend swap — same interface, different transport.
  */
 
-import { castTrack, controlPlayback, fetchStatus } from './api.js';
+import { castTrack, controlPlayback, fetchStatus, listenerHeaders } from './api.js';
 import { recordPlay } from './stats.js';
 
 class PlaybackController {
@@ -244,11 +244,11 @@ class PlaybackController {
     }
   }
 
-  /** Push local playback state to server for remote. */
+  /** Push local playback state to server for remote (per-listener). */
   _pushState(status) {
     fetch('/api/playback', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: listenerHeaders(),
       body: JSON.stringify(status),
     }).catch(() => {});
   }

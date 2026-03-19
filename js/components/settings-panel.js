@@ -290,11 +290,6 @@ h3 {
 <div class="sheet">
   <h3>Settings</h3>
 
-  <div class="field">
-    <label>Your name</label>
-    <input type="text" id="username" placeholder="How should we greet you?" autocomplete="off">
-  </div>
-
   <div class="section">
     <div class="section-title">Music library</div>
     <div class="field">
@@ -337,6 +332,14 @@ h3 {
   </div>
 
   <div class="section">
+    <div class="section-title">Listener</div>
+    <div class="field">
+      <div class="hint" style="margin-bottom:8px">Switch to a different listener profile. This will show the welcome screen again.</div>
+      <button class="save-btn" id="switch-listener-btn" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border)">Switch listener</button>
+    </div>
+  </div>
+
+  <div class="section">
     <div class="section-title">Audio analysis</div>
     <div class="field">
       <div class="hint" style="margin-bottom:8px">Scan your library to extract audio features. This enables "sounds like" recommendations based on how tracks actually sound — no genre tags needed.</div>
@@ -362,21 +365,6 @@ class SettingsPanel extends HTMLElement {
     const $ = id => this.shadowRoot.getElementById(id);
 
     $('scrim').addEventListener('click', () => this.removeAttribute('open'));
-
-    // ── Username — save on blur or Enter ──
-    $('username').value = localStorage.getItem('musicast-username') || '';
-    const saveName = () => {
-      const name = $('username').value.trim();
-      localStorage.setItem('musicast-username', name);
-      this.dispatchEvent(new CustomEvent('username-change', {
-        bubbles: true, composed: true,
-        detail: { name },
-      }));
-    };
-    $('username').addEventListener('change', saveName);
-    $('username').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); saveName(); }
-    });
 
     // ── WiFi IP ──
     $('wifi-ip').value = localStorage.getItem('musicast-lan-ip') || '';
@@ -422,6 +410,13 @@ class SettingsPanel extends HTMLElement {
     });
 
     $('analyze-btn').addEventListener('click', () => this._startAnalysis());
+
+    $('switch-listener-btn').addEventListener('click', () => {
+      this.removeAttribute('open');
+      this.dispatchEvent(new CustomEvent('switch-listener', {
+        bubbles: true, composed: true,
+      }));
+    });
   }
 
   async _browse(path) {
@@ -546,7 +541,6 @@ class SettingsPanel extends HTMLElement {
 
   async load() {
     const $ = id => this.shadowRoot.getElementById(id);
-    $('username').value = localStorage.getItem('musicast-username') || '';
     $('wifi-ip').value = localStorage.getItem('musicast-lan-ip') || '';
     try {
       const cfg = await fetchConfig();
